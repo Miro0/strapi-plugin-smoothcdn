@@ -1,0 +1,28 @@
+{
+  "name": "strapi-plugin-smoothcdn",
+  "version": "1.0.0",
+  "description": "Modular Smooth CDN plugin for Strapi.",
+  "license": "UNLICENSED",
+  "main": "strapi-server.js",
+  "files": [
+    "admin",
+    "server",
+    "strapi-admin.js",
+    "strapi-server.js",
+    "README.md"
+  ],
+  "scripts": {
+    "check:server": "node --check strapi-server.js && find server -name '*.js' -print0 | xargs -0 -n1 node --check"
+  },
+  "peerDependencies": {
+    "@strapi/strapi": "^5.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  },
+  "strapi": {
+    "kind": "plugin",
+    "name": "smoothcdn",
+    "displayName": "Smooth CDN",
+    "description": "Core Smooth CDN connection plus modular acceleration features for Strapi."
+  }
+}
