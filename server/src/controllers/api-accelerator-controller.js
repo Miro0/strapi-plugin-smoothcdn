@@ -24,9 +24,46 @@ async function ensureEnabled(strapi, ctx) {
 
 module.exports = ({ strapi }) => ({
   async updateSettings(ctx) {
-    const settings = await plugin(strapi).service('api-accelerator-settings').update(ctx.request.body || {});
+    const settingsService = plugin(strapi).service('api-accelerator-settings');
+    const previousSettings = await settingsService.get();
+    const settings = await settingsService.update(ctx.request.body || {});
+    const enabled = await plugin(strapi).service('module-registry').isEnabled('api-accelerator');
+    const protectedAssetsChanged = previousSettings.protectedAssets !== settings.protectedAssets;
+    const collectionPageSizeChanged =
+      Number(previousSettings.collectionSyncPerPage) !== Number(settings.collectionSyncPerPage);
+    let discoveryResult = null;
+    let syncResult = null;
+
+    if (enabled && (protectedAssetsChanged || collectionPageSizeChanged)) {
+      await plugin(strapi).service('api-accelerator-sync').forceResetSyncState(
+        'Sync state was reset after API Accelerator settings changed.'
+      );
+    }
+
+    if (enabled && collectionPageSizeChanged) {
+      discoveryResult = await plugin(strapi).service('api-accelerator-discovery').discover();
+    }
+
+    if (enabled && (protectedAssetsChanged || collectionPageSizeChanged)) {
+      syncResult = await plugin(strapi).service('api-accelerator-sync').startManualSyncJob([], {
+        trigger: 'settings_change',
+        forceUpload: protectedAssetsChanged,
+      });
+    }
+
+    const endpoints = enabled
+      ? await plugin(strapi).service('api-accelerator-repository').all()
+      : [];
+
     ctx.body = {
-      data: settings,
+      data: {
+        settings,
+        endpoints,
+        discoveryResult,
+        syncJob: syncResult?.job || null,
+        syncTriggered: Boolean(syncResult?.success && syncResult?.job),
+        scanTriggered: Boolean(discoveryResult),
+      },
     };
   },
 
@@ -53,27 +90,81 @@ module.exports = ({ strapi }) => ({
       return;
     }
 
-    const result = await plugin(strapi).service('api-accelerator-sync').syncRoutes(ctx.request.body?.routes || [], {
+    const result = await plugin(strapi).service('api-accelerator-sync').startManualSyncJob(ctx.request.body?.routes || [], {
       trigger: 'manual',
       restrictContentTypes: ctx.request.body?.contentTypes || [],
     });
-    const endpoints = await plugin(strapi).service('api-accelerator-repository').all();
 
     ctx.body = {
       data: {
         result,
-        endpoints,
+        job: result.job || null,
       },
     };
-    ctx.status = result.success ? 200 : 400;
+    ctx.status = result.success ? 202 : result.busy ? 409 : 400;
+  },
+
+  async syncStatus(ctx) {
+    if (!(await ensureEnabled(strapi, ctx))) {
+      return;
+    }
+
+    const job = await plugin(strapi).service('api-accelerator-sync').getSyncJobStatus();
+
+    ctx.body = {
+      data: {
+        job,
+      },
+    };
   },
 
   async setSyncable(ctx) {
-    const route = ctx.request.body?.route;
-    const syncable = Boolean(ctx.request.body?.syncable);
-    const entry = await plugin(strapi).service('api-accelerator-repository').setSyncable(route, syncable);
+    if (!(await ensureEnabled(strapi, ctx))) {
+      return;
+    }
 
-    if (!entry) {
+    const route = ctx.request.body?.route;
+    const routes = Array.isArray(ctx.request.body?.routes) ? ctx.request.body.routes : [];
+    const syncable = Boolean(ctx.request.body?.syncable);
+    const normalizedRoutes = Array.from(
+      new Set(
+        [...routes, route]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (normalizedRoutes.length === 0) {
+      ctx.status = 400;
+      ctx.body = {
+        error: {
+          message: 'Provide at least one endpoint route.',
+        },
+      };
+      return;
+    }
+
+    if (!syncable) {
+      const purgeResult = await plugin(strapi).service('api-accelerator-sync').purgeRoutes(normalizedRoutes);
+
+      if (!purgeResult.success) {
+        ctx.status = 400;
+        ctx.body = {
+          error: {
+            message: purgeResult.message || 'Could not delete synced assets from Smooth CDN.',
+          },
+          data: {
+            result: purgeResult,
+            endpoints: await plugin(strapi).service('api-accelerator-repository').all(),
+          },
+        };
+        return;
+      }
+    }
+
+    const entries = await plugin(strapi).service('api-accelerator-repository').setSyncableMany(normalizedRoutes, syncable);
+
+    if (entries.length === 0) {
       ctx.status = 404;
       ctx.body = {
         error: {
@@ -84,7 +175,9 @@ module.exports = ({ strapi }) => ({
     }
 
     ctx.body = {
-      data: entry,
+      data: {
+        entries,
+      },
     };
   },
 

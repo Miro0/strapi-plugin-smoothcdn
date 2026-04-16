@@ -3,6 +3,36 @@
 const { nowIso } = require('../../utils/helpers');
 const pluginId = require('../../plugin-id');
 
+function sanitizeProject(entry = {}, current = {}) {
+  const merged = {
+    ...current,
+    ...(entry && typeof entry === 'object' ? entry : {}),
+  };
+
+  return {
+    projectId: String(merged.projectId || '').trim(),
+    projectType: String(merged.projectType || '').trim(),
+    projectSlug: String(merged.projectSlug || '').trim(),
+    assetsCount: Math.max(0, Number(merged.assetsCount) || 0),
+  };
+}
+
+function sanitizeStatusSummary(entry = {}, current = {}) {
+  const merged = {
+    ...current,
+    ...(entry && typeof entry === 'object' ? entry : {}),
+  };
+
+  return {
+    requests: Math.max(0, Number(merged.requests) || 0),
+    maxRequests: Math.max(0, Number(merged.maxRequests) || 0),
+    bandwidth: Math.max(0, Number(merged.bandwidth) || 0),
+    maxBandwidth: Math.max(0, Number(merged.maxBandwidth) || 0),
+    assetsPerProject: Math.max(0, Number(merged.assetsPerProject) || 0),
+    periodEnd: String(merged.periodEnd || '').trim(),
+  };
+}
+
 module.exports = ({ strapi }) => ({
   defaults() {
     return {
@@ -12,9 +42,15 @@ module.exports = ({ strapi }) => ({
       authVerificationUrl: '',
       authSessionStatus: 'idle',
       authMode: '',
-      projectId: '',
-      projectSlug: '',
-      projectType: '',
+      moduleProjects: {},
+      statusSummary: {
+        requests: 0,
+        maxRequests: 0,
+        bandwidth: 0,
+        maxBandwidth: 0,
+        assetsPerProject: 0,
+        periodEnd: '',
+      },
       userSlug: '',
       userName: '',
       userEmail: '',
@@ -45,6 +81,46 @@ module.exports = ({ strapi }) => ({
       ...payload,
     };
     const accessToken = String(merged.accessToken || merged.apiKey || '').trim();
+    const currentModuleProjects =
+      current.moduleProjects && typeof current.moduleProjects === 'object' ? current.moduleProjects : {};
+    const incomingModuleProjects =
+      merged.moduleProjects && typeof merged.moduleProjects === 'object' ? merged.moduleProjects : {};
+    const moduleProjects = {};
+    const statusSummary = sanitizeStatusSummary(merged.statusSummary, current.statusSummary);
+
+    for (const [moduleId, project] of Object.entries({
+      ...currentModuleProjects,
+      ...incomingModuleProjects,
+    })) {
+      const normalizedModuleId = String(moduleId || '').trim();
+      if (!normalizedModuleId) {
+        continue;
+      }
+
+      const sanitizedProject = sanitizeProject(project, currentModuleProjects[normalizedModuleId]);
+
+      if (!sanitizedProject.projectId && !sanitizedProject.projectSlug && !sanitizedProject.projectType) {
+        continue;
+      }
+
+      moduleProjects[normalizedModuleId] = sanitizedProject;
+    }
+
+    const hasLegacyProject = merged.projectId || merged.projectSlug || merged.projectType;
+    if (
+      hasLegacyProject &&
+      !moduleProjects['api-accelerator']
+    ) {
+      const legacyProject = sanitizeProject({
+        projectId: merged.projectId,
+        projectSlug: merged.projectSlug,
+        projectType: merged.projectType,
+      });
+
+      if (legacyProject.projectId || legacyProject.projectSlug || legacyProject.projectType) {
+        moduleProjects['api-accelerator'] = legacyProject;
+      }
+    }
 
     return {
       accessToken,
@@ -57,9 +133,8 @@ module.exports = ({ strapi }) => ({
         ? String(merged.authSessionStatus)
         : 'idle',
       authMode: ['browser', 'guest', ''].includes(String(merged.authMode || '')) ? String(merged.authMode) : '',
-      projectId: String(merged.projectId || '').trim(),
-      projectType: String(merged.projectType || '').trim(),
-      projectSlug: String(merged.projectSlug || '').trim(),
+      moduleProjects,
+      statusSummary,
       userSlug: String(merged.userSlug || '').trim(),
       userName: String(merged.userName || '').trim(),
       userEmail: String(merged.userEmail || '').trim(),
@@ -98,9 +173,8 @@ module.exports = ({ strapi }) => ({
       next.authVerificationUrl = '';
       next.authSessionStatus = 'idle';
       next.authMode = '';
-      next.projectId = '';
-      next.projectSlug = '';
-      next.projectType = '';
+      next.moduleProjects = {};
+      next.statusSummary = sanitizeStatusSummary();
       next.userSlug = '';
       next.userName = '';
       next.userEmail = '';
@@ -150,30 +224,56 @@ module.exports = ({ strapi }) => ({
     });
   },
 
-  async markProjectCreated(payload = {}) {
+  async getProject(moduleId) {
+    const settings = await this.get();
+    const normalizedModuleId = String(moduleId || '').trim();
+    return sanitizeProject(settings.moduleProjects?.[normalizedModuleId]);
+  },
+
+  async markProjectCreated(moduleId, payload = {}) {
+    const settings = await this.get();
+    const normalizedModuleId = String(moduleId || '').trim();
+
+    if (!normalizedModuleId) {
+      return settings;
+    }
+
+    const nextModuleProjects = {
+      ...settings.moduleProjects,
+      [normalizedModuleId]: sanitizeProject(payload, settings.moduleProjects?.[normalizedModuleId]),
+    };
+
     return this.update({
-      ...payload,
+      moduleProjects: nextModuleProjects,
       lastProjectCreationAt: nowIso(),
     });
   },
 
   async markDisconnected() {
-    return this.update({
-      accessToken: '',
-      connected: false,
-      authKeyId: '',
-      authVerificationUrl: '',
-      authSessionStatus: 'idle',
-      authMode: '',
-      projectId: '',
-      projectSlug: '',
-      projectType: '',
-      userSlug: '',
-      userName: '',
-      userEmail: '',
-      userPlan: -1,
-      userPlanLabel: '',
-    });
+    return this.update(
+      {
+        accessToken: '',
+        connected: false,
+        authKeyId: '',
+        authVerificationUrl: '',
+        authSessionStatus: 'idle',
+        authMode: '',
+        moduleProjects: {},
+        statusSummary: sanitizeStatusSummary(),
+        userSlug: '',
+        userName: '',
+        userEmail: '',
+        userPlan: -1,
+        userPlanLabel: '',
+        lastConnectionAt: '',
+        lastStatusSyncAt: '',
+        lastProjectCreationAt: '',
+        lastAuthStartedAt: '',
+      },
+      {
+        preserveAccessToken: false,
+      }
+    );
   },
 
   async isConnected() {

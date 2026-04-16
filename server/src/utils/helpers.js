@@ -173,18 +173,157 @@ function safeJsonParse(value, fallback = null) {
   }
 }
 
-function buildProjectDashboardUrl(settings = {}) {
-  if (!settings.userSlug || !settings.projectSlug) {
+function buildProjectDashboardUrl(userSlugOrSettings = {}, projectSlug = '') {
+  const userSlug =
+    typeof userSlugOrSettings === 'object' && userSlugOrSettings !== null
+      ? String(userSlugOrSettings.userSlug || '').trim()
+      : String(userSlugOrSettings || '').trim();
+  const resolvedProjectSlug =
+    typeof userSlugOrSettings === 'object' && userSlugOrSettings !== null
+      ? String(userSlugOrSettings.projectSlug || '').trim()
+      : String(projectSlug || '').trim();
+
+  if (!userSlug || !resolvedProjectSlug) {
     return '';
   }
 
-  return `${CDN_PUBLIC_HOST}/${encodeURIComponent(settings.userSlug)}/${encodeURIComponent(settings.projectSlug)}`;
+  return `${CDN_PUBLIC_HOST}/${encodeURIComponent(userSlug)}/${encodeURIComponent(resolvedProjectSlug)}`;
+}
+
+function buildProjectPanelPath(projectId = '') {
+  const normalizedProjectId = String(projectId || '').trim();
+
+  if (!normalizedProjectId) {
+    return '/panel';
+  }
+
+  return `/panel/dev/projects/${encodeURIComponent(normalizedProjectId)}`;
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isMorphRelationAttribute(attribute) {
+  return (
+    attribute &&
+    attribute.type === 'relation' &&
+    typeof attribute.relation === 'string' &&
+    attribute.relation.toLowerCase().startsWith('morph')
+  );
+}
+
+function getSchemaModel(strapi, uid) {
+  if (!strapi || !uid) {
+    return null;
+  }
+
+  if (typeof strapi.getModel === 'function') {
+    const model = strapi.getModel(uid);
+    if (model) {
+      return model;
+    }
+  }
+
+  return strapi.contentTypes?.[uid] || strapi.components?.[uid] || null;
+}
+
+function buildPopulateForAttribute(strapi, attribute, options, state) {
+  if (!attribute || typeof attribute !== 'object') {
+    return undefined;
+  }
+
+  const maxDepth = Number.isFinite(options.maxDepth) ? Math.max(1, Math.floor(options.maxDepth)) : 4;
+  const nextLevel = state.level + 1;
+
+  switch (attribute.type) {
+    case 'media':
+      return true;
+    case 'component': {
+      if (!attribute.component || nextLevel > maxDepth) {
+        return true;
+      }
+
+      const childPopulate = buildSchemaPopulateTree(strapi, attribute.component, options, {
+        level: nextLevel,
+        ancestry: [...state.ancestry, state.uid],
+      });
+
+      return Object.keys(childPopulate).length > 0 ? { populate: childPopulate } : true;
+    }
+    case 'dynamiczone': {
+      const fragments = {};
+
+      for (const componentUid of attribute.components || []) {
+        if (!componentUid) {
+          continue;
+        }
+
+        if (nextLevel > maxDepth) {
+          fragments[componentUid] = {};
+          continue;
+        }
+
+        const childPopulate = buildSchemaPopulateTree(strapi, componentUid, options, {
+          level: nextLevel,
+          ancestry: [...state.ancestry, state.uid],
+        });
+
+        fragments[componentUid] = Object.keys(childPopulate).length > 0 ? { populate: childPopulate } : {};
+      }
+
+      return Object.keys(fragments).length > 0 ? { on: fragments } : true;
+    }
+    case 'relation': {
+      if (isMorphRelationAttribute(attribute) || !attribute.target) {
+        return undefined;
+      }
+
+      return true;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function buildSchemaPopulateTree(strapi, uid, options = {}, state = {}) {
+  const model = getSchemaModel(strapi, uid);
+  if (!model || typeof model !== 'object') {
+    return {};
+  }
+
+  const attributes = model.attributes && typeof model.attributes === 'object' ? model.attributes : {};
+  const level = Number.isFinite(state.level) ? state.level : 1;
+  const ancestry = Array.isArray(state.ancestry) ? state.ancestry : [];
+  const populate = {};
+
+  for (const [attributeName, attribute] of Object.entries(attributes)) {
+    const attributePopulate = buildPopulateForAttribute(strapi, attribute, options, {
+      uid,
+      level,
+      ancestry,
+    });
+
+    if (attributePopulate !== undefined) {
+      populate[attributeName] = attributePopulate;
+    }
+  }
+
+  return populate;
 }
 
 module.exports = {
+  buildProjectPanelPath,
   buildProjectDashboardUrl,
+  buildSchemaPopulateTree,
   buildUploadTarget,
   buildUploadTargetsForRouteAssets,
+  escapeHtml,
   extractIdentifier,
   isPublicContentType,
   md5,

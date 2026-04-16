@@ -7,10 +7,28 @@ function toTimestamp(value) {
   return timestamp > 0 ? timestamp : 0;
 }
 
+function defaultSyncJob() {
+  return {
+    id: '',
+    status: 'idle',
+    trigger: '',
+    totalRoutes: 0,
+    processedRoutes: 0,
+    syncedRoutes: 0,
+    failedRoutes: 0,
+    skippedRoutes: 0,
+    currentRoute: '',
+    startedAt: '',
+    finishedAt: '',
+    errorMessage: '',
+    failedEntries: [],
+  };
+}
+
 module.exports = ({ strapi }) => ({
   defaults() {
     return {
-      pendingContentTypes: [],
+      pendingContentChanges: [],
       pendingFlushAfter: 0,
       schedulerLock: {
         owner: '',
@@ -20,6 +38,7 @@ module.exports = ({ strapi }) => ({
         owner: '',
         expiresAt: 0,
       },
+      syncJob: defaultSyncJob(),
     };
   },
 
@@ -39,14 +58,21 @@ module.exports = ({ strapi }) => ({
     const syncLock = payload.syncLock && typeof payload.syncLock === 'object'
       ? payload.syncLock
       : defaults.syncLock;
+    const syncJob = payload.syncJob && typeof payload.syncJob === 'object'
+      ? payload.syncJob
+      : defaults.syncJob;
 
     return {
-      pendingContentTypes: Array.from(
-        new Set(
-          (Array.isArray(payload.pendingContentTypes) ? payload.pendingContentTypes : [])
-            .map((uid) => String(uid || '').trim())
-            .filter(Boolean)
-        )
+      pendingContentChanges: Array.from(
+        new Map(
+          (Array.isArray(payload.pendingContentChanges) ? payload.pendingContentChanges : [])
+            .map((entry) => ({
+              uid: String(entry?.uid || '').trim(),
+              documentId: String(entry?.documentId || '').trim(),
+            }))
+            .filter((entry) => entry.uid.startsWith('api::'))
+            .map((entry) => [`${entry.uid}:${entry.documentId}`, entry])
+        ).values()
       ),
       pendingFlushAfter: toTimestamp(payload.pendingFlushAfter),
       schedulerLock: {
@@ -56,6 +82,31 @@ module.exports = ({ strapi }) => ({
       syncLock: {
         owner: String(syncLock.owner || '').trim(),
         expiresAt: toTimestamp(syncLock.expiresAt),
+      },
+      syncJob: {
+        id: String(syncJob.id || '').trim(),
+        status: ['idle', 'running', 'completed', 'failed'].includes(String(syncJob.status || '').trim())
+          ? String(syncJob.status || '').trim()
+          : 'idle',
+        trigger: String(syncJob.trigger || '').trim(),
+        totalRoutes: Math.max(0, Number(syncJob.totalRoutes) || 0),
+        processedRoutes: Math.max(0, Number(syncJob.processedRoutes) || 0),
+        syncedRoutes: Math.max(0, Number(syncJob.syncedRoutes) || 0),
+        failedRoutes: Math.max(0, Number(syncJob.failedRoutes) || 0),
+        skippedRoutes: Math.max(0, Number(syncJob.skippedRoutes) || 0),
+        currentRoute: String(syncJob.currentRoute || '').trim(),
+        startedAt: String(syncJob.startedAt || '').trim(),
+        finishedAt: String(syncJob.finishedAt || '').trim(),
+        errorMessage: String(syncJob.errorMessage || '').trim(),
+        failedEntries: Array.isArray(syncJob.failedEntries)
+          ? syncJob.failedEntries
+              .map((entry) => ({
+                route: String(entry?.route || '').trim(),
+                message: String(entry?.message || '').trim(),
+              }))
+              .filter((entry) => entry.route && entry.message)
+              .slice(0, 20)
+          : [],
       },
     };
   },
@@ -81,45 +132,54 @@ module.exports = ({ strapi }) => ({
     });
   },
 
-  async queueContentTypes(uids = [], delayMs = 5000) {
+  async queueContentChanges(entries = [], delayMs = 5000) {
     const normalizedDelay = Math.max(500, Number(delayMs) || 5000);
-    const normalizedUids = Array.from(
-      new Set(
-        (Array.isArray(uids) ? uids : [])
-          .map((uid) => String(uid || '').trim())
-          .filter((uid) => uid.startsWith('api::'))
-      )
+    const normalizedEntries = Array.from(
+      new Map(
+        (Array.isArray(entries) ? entries : [])
+          .map((entry) => ({
+            uid: String(entry?.uid || '').trim(),
+            documentId: String(entry?.documentId || '').trim(),
+          }))
+          .filter((entry) => entry.uid.startsWith('api::'))
+          .map((entry) => [`${entry.uid}:${entry.documentId}`, entry])
+      ).values()
     );
 
-    if (normalizedUids.length === 0) {
+    if (normalizedEntries.length === 0) {
       return this.get();
     }
 
     return this.update((current) => ({
-      pendingContentTypes: Array.from(new Set([...current.pendingContentTypes, ...normalizedUids])),
+      pendingContentChanges: Array.from(
+        new Map(
+          [...(current.pendingContentChanges || []), ...normalizedEntries]
+            .map((entry) => [`${entry.uid}:${entry.documentId}`, entry])
+        ).values()
+      ),
       pendingFlushAfter: Date.now() + normalizedDelay,
     }));
   },
 
-  async takeDuePendingContentTypes(now = Date.now()) {
+  async takeDuePendingContentChanges(now = Date.now()) {
     const current = await this.get();
 
-    if (current.pendingContentTypes.length === 0 || current.pendingFlushAfter > now) {
+    if (current.pendingContentChanges.length === 0 || current.pendingFlushAfter > now) {
       return [];
     }
 
-    const queued = [...current.pendingContentTypes];
+    const queued = [...current.pendingContentChanges];
     await this.save({
       ...current,
-      pendingContentTypes: [],
+      pendingContentChanges: [],
       pendingFlushAfter: 0,
     });
 
     return queued;
   },
 
-  async requeueContentTypes(uids = [], delayMs = 5000) {
-    return this.queueContentTypes(uids, delayMs);
+  async requeueContentChanges(entries = [], delayMs = 5000) {
+    return this.queueContentChanges(entries, delayMs);
   },
 
   async claimLock(lockKey, owner, ttlMs) {

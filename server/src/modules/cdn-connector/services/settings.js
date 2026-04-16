@@ -1,6 +1,5 @@
 'use strict';
 
-const { DEFAULT_SYNC_PAGE_SIZE } = require('../../../utils/constants');
 const { nowIso } = require('../../../utils/helpers');
 const pluginId = require('../../../plugin-id');
 
@@ -8,13 +7,11 @@ module.exports = ({ strapi }) => ({
   defaults() {
     return {
       protectedAssets: false,
-      blockGetMode: 'no',
-      collectionSyncPerPage: DEFAULT_SYNC_PAGE_SIZE,
+      offloadLocalFiles: false,
       autoSyncFrequency: 'hourly',
-      lastDiscoveryAt: '',
+      syncAllFormats: true,
       lastSyncAt: '',
       lastAutoSyncAt: '',
-      debounceMs: 5000,
     };
   },
 
@@ -22,7 +19,7 @@ module.exports = ({ strapi }) => ({
     return strapi.store({
       type: 'plugin',
       name: pluginId,
-      key: 'api-accelerator-settings',
+      key: 'cdn-connector-settings',
     });
   },
 
@@ -34,24 +31,19 @@ module.exports = ({ strapi }) => ({
       ...payload,
     };
 
-    const collectionSyncPerPage = Number(merged.collectionSyncPerPage) || DEFAULT_SYNC_PAGE_SIZE;
-    const debounceMs = Number(merged.debounceMs) || 5000;
-
     return {
       protectedAssets: Boolean(merged.protectedAssets),
-      blockGetMode: ['no', 'all', 'synced'].includes(String(merged.blockGetMode))
-        ? String(merged.blockGetMode)
-        : 'no',
-      collectionSyncPerPage: [10, 25, 50, 100, 250, 500].includes(collectionSyncPerPage)
-        ? collectionSyncPerPage
-        : DEFAULT_SYNC_PAGE_SIZE,
+      offloadLocalFiles: Object.prototype.hasOwnProperty.call(merged, 'offloadLocalFiles')
+        ? Boolean(merged.offloadLocalFiles)
+        : defaults.offloadLocalFiles,
       autoSyncFrequency: ['hourly', 'daily', 'weekly', 'off'].includes(String(merged.autoSyncFrequency))
         ? String(merged.autoSyncFrequency)
-        : 'hourly',
-      lastDiscoveryAt: String(merged.lastDiscoveryAt || '').trim(),
+        : defaults.autoSyncFrequency,
+      syncAllFormats: Object.prototype.hasOwnProperty.call(merged, 'syncAllFormats')
+        ? Boolean(merged.syncAllFormats)
+        : defaults.syncAllFormats,
       lastSyncAt: String(merged.lastSyncAt || '').trim(),
       lastAutoSyncAt: String(merged.lastAutoSyncAt || '').trim(),
-      debounceMs: Math.max(500, debounceMs),
     };
   },
 
@@ -62,8 +54,9 @@ module.exports = ({ strapi }) => ({
 
   async getResolved(overrides = {}) {
     const coreSettings = await strapi.plugin('smoothcdn').service('core-settings').get();
-    const project = await strapi.plugin('smoothcdn').service('core-settings').getProject('api-accelerator');
+    const project = await strapi.plugin('smoothcdn').service('core-settings').getProject('cdn-connector');
     const moduleSettings = await this.get();
+
     return {
       ...coreSettings,
       ...project,

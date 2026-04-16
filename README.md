@@ -5,9 +5,8 @@ A modular Strapi plugin for Smooth CDN.
 ## Current scope
 
 - `core`: browser-based Smooth CDN authentication, guest login support, auth polling, and account status sync
+- `CDN Connector`: media sync, image variant sync, direct Smooth CDN delivery links, optional local-file offload
 - `API Accelerator`: Content API discovery, JSON snapshot sync, purge, and automatic resync
-- `CDN Connector`: placeholder module
-- `CWV Pipeline`: placeholder module
 
 All modules are disabled by default. The first time any module is enabled, the plugin creates a Smooth CDN project automatically if one does not exist yet.
 
@@ -39,5 +38,5 @@ Without that extra dependency resolution step, the admin build may fail to resol
 ## Architecture
 
 - `server/src/core` contains shared Smooth CDN authentication, status sync, and project management services
-- `server/src/modules/api-accelerator` contains the implemented module 1 backend
-- `CDN Connector` and `CWV Pipeline` are currently placeholders in both the backend registry and admin UI
+- `server/src/modules/cdn-connector` contains the CDN Connector backend
+- `server/src/modules/api-accelerator` contains the API Accelerator backend

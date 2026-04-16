@@ -51,6 +51,31 @@ module.exports = [
   },
   {
     method: 'POST',
+    path: '/core/purge-plugin-data',
+    handler: 'core.purgePluginData',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'POST',
+    path: '/core/create-free-account',
+    handler: 'core.createFreeAccount',
+    config: {
+      auth: false,
+      policies: [],
+    },
+  },
+  {
+    method: 'GET',
+    path: '/modules/:moduleId/project-token',
+    handler: 'core.getProjectToken',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'POST',
     path: '/modules/:moduleId/toggle',
     handler: 'core.toggleModule',
     config: {
@@ -82,6 +107,14 @@ module.exports = [
     },
   },
   {
+    method: 'GET',
+    path: '/modules/api-accelerator/sync/status',
+    handler: 'apiAccelerator.syncStatus',
+    config: {
+      policies: [],
+    },
+  },
+  {
     method: 'POST',
     path: '/modules/api-accelerator/syncable',
     handler: 'apiAccelerator.setSyncable',
@@ -93,6 +126,38 @@ module.exports = [
     method: 'POST',
     path: '/modules/api-accelerator/purge',
     handler: 'apiAccelerator.purge',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'PUT',
+    path: '/modules/cdn-connector/settings',
+    handler: 'cdnConnector.updateSettings',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'POST',
+    path: '/modules/cdn-connector/sync',
+    handler: 'cdnConnector.sync',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'POST',
+    path: '/modules/cdn-connector/unsync',
+    handler: 'cdnConnector.unsync',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'GET',
+    path: '/modules/cdn-connector/sync/status',
+    handler: 'cdnConnector.syncStatus',
     config: {
       policies: [],
     },

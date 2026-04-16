@@ -6,26 +6,26 @@ module.exports = ({ strapi }) => ({
   definitions() {
     return [
       {
+        id: 'cdn-connector',
+        name: 'CDN Connector',
+        implemented: true,
+        projectType: 'cdn_connector',
+        description: 'Sync Strapi media items and generated image sizes to Smooth CDN.',
+      },
+      {
         id: 'api-accelerator',
         name: 'API Accelerator',
         implemented: true,
         projectType: 'api_accelerator',
         description: 'Discover, sync, and purge Content API snapshots in Smooth CDN.',
       },
-      {
-        id: 'cdn-connector',
-        name: 'CDN Connector',
-        implemented: false,
-        projectType: 'basic',
-        description: 'Placeholder for future asset delivery and CDN routing features.',
-      },
-      {
-        id: 'cwv-pipeline',
-        name: 'CWV Pipeline',
-        implemented: false,
-        projectType: 'basic',
-        description: 'Placeholder for a future Core Web Vitals pipeline.',
-      },
+      // {
+      //   id: 'cwv-pipeline',
+      //   name: 'CWV Pipeline',
+      //   implemented: true,
+      //   projectType: 'cwv_pipeline',
+      //   description: 'Prepare a dedicated Smooth CDN project for the Core Web Vitals pipeline.',
+      // },
     ];
   },
 
