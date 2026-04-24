@@ -1,9 +1,25 @@
 {
   "name": "strapi-plugin-smoothcdn",
   "version": "1.0.0",
-  "description": "Modular Smooth CDN plugin for Strapi.",
-  "license": "UNLICENSED",
+  "description": "Boost Strapi performance by connecting media and API assets to Smooth CDN with built-in optimization and scalable delivery pipelines.",
+  "keywords": [
+    "strapi",
+    "strapi-plugin",
+    "cdn",
+    "assets",
+    "media",
+    "smoothcdn"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Miro0/strapi-plugin-smoothcdn"
+  },
+  "homepage": "https://smoothcdn.com",
   "main": "strapi-server.js",
+  "exports": {
+    ".": "./strapi-server.js"
+  },
   "files": [
     "admin",
     "server",
@@ -24,5 +40,12 @@
     "name": "smoothcdn",
     "displayName": "Smooth CDN",
     "description": "Core Smooth CDN connection plus modular acceleration features for Strapi."
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=6.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

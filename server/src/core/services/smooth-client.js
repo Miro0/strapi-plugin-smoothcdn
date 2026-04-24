@@ -1153,25 +1153,6 @@ module.exports = ({ strapi }) => ({
           form.append('meta', JSON.stringify(asset.meta || {}));
         }
 
-        console.log('[smoothcdn] Upload API payload preview', {
-          moduleId: String(moduleId || '').trim(),
-          projectId: project.projectId,
-          path: sample.path,
-          protected: sample.protected ? '1' : '0',
-          force: '0',
-          assets: chunk.map((asset) => ({
-            route: asset.route,
-            filename: asset.filename,
-            contentType: asset.contentType || 'application/octet-stream',
-            meta: asset.meta || {},
-            size: Buffer.isBuffer(asset.body)
-              ? asset.body.length
-              : typeof asset.body === 'string'
-                ? Buffer.byteLength(asset.body)
-                : 0,
-          })),
-        });
-
         let response;
         let payload = {};
 
