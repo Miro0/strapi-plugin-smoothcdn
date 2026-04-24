@@ -19,6 +19,7 @@ function buildModuleProject(settings, moduleId) {
     projectSlug: project.projectSlug || '',
     projectType: project.projectType || '',
     assetsCount: Math.max(0, Number(project.assetsCount) || 0),
+    customSubdomain: project.customSubdomain || '',
     dashboardUrl: buildProjectDashboardUrl(settings.userSlug, project.projectSlug),
   };
 }

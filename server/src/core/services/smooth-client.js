@@ -49,6 +49,34 @@ function extractProjectSlug(payload = {}) {
   })[0] || '';
 }
 
+function normalizeCustomSubdomain(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (!normalized) {
+    return '';
+  }
+
+  const hostCandidate = normalized
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '')
+    .replace(/\.smoothcdn\.com$/i, '')
+    .replace(/^\.+|\.+$/g, '');
+
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(hostCandidate) ? hostCandidate : '';
+}
+
+function extractCustomSubdomain(payload = {}) {
+  return normalizeCustomSubdomain(
+    payload.customSubdomain ||
+      payload.custom_subdomain ||
+      payload?.project?.customSubdomain ||
+      payload?.project?.custom_subdomain ||
+      payload?.currentProject?.customSubdomain ||
+      payload?.currentProject?.custom_subdomain ||
+      ''
+  );
+}
+
 function planLabel(plan) {
   switch (Number(plan)) {
     case -1:
@@ -155,6 +183,9 @@ function reconcileModuleProjects(moduleProjects = {}, projects = []) {
         ? String(matchingProject.type || currentProject.projectType || '').trim()
         : String(currentProject.projectType || '').trim(),
       assetsCount: matchingProject ? Math.max(0, Number(matchingProject.assetsCount) || 0) : 0,
+      customSubdomain: matchingProject
+        ? extractCustomSubdomain(matchingProject) || String(currentProject.customSubdomain || '').trim()
+        : String(currentProject.customSubdomain || '').trim(),
     };
   }
 
@@ -899,8 +930,9 @@ module.exports = ({ strapi }) => ({
                 existingProjectData?.project?.assets_count ||
                 currentProject.assetsCount ||
                 0
-            )
+              )
           ),
+          customSubdomain: extractCustomSubdomain(existingProjectData) || currentProject.customSubdomain || '',
         });
 
         return {
@@ -945,6 +977,7 @@ module.exports = ({ strapi }) => ({
     const projectId = String(projectData.id || projectData.project_id || projectData?.project?.id || '').trim();
     const projectSlug = extractProjectSlug(projectData) || String(projectData.slug || '').trim();
     const projectType = String(projectData.type || definition.projectType || '').trim();
+    const customSubdomain = extractCustomSubdomain(projectData);
 
     if (!projectId) {
       return {
@@ -957,12 +990,97 @@ module.exports = ({ strapi }) => ({
       projectId,
       projectSlug,
       projectType,
+      customSubdomain,
     });
 
     return {
       success: true,
       created: projectResponse.status === 201,
       settings: nextSettings,
+    };
+  },
+
+  async updateProjectCustomSubdomain(moduleId, customSubdomain = '') {
+    const settingsService = strapi.plugin('smoothcdn').service('core-settings');
+    const settings = await settingsService.get();
+    let project = await settingsService.getProject(moduleId);
+    const normalizedCustomSubdomain = normalizeCustomSubdomain(customSubdomain);
+
+    if (String(customSubdomain || '').trim() && !normalizedCustomSubdomain) {
+      return {
+        success: false,
+        message: 'Provide a valid Smooth CDN subdomain, for example "my-project".',
+      };
+    }
+
+    if (!settings.connected || !settings.accessToken) {
+      return {
+        success: false,
+        message: 'Connect to Smooth CDN before updating the project subdomain.',
+      };
+    }
+
+    if (!project.projectId) {
+      const ensureResult = await this.ensureProject(moduleId);
+
+      if (!ensureResult.success) {
+        return ensureResult;
+      }
+
+      project = await settingsService.getProject(moduleId);
+    }
+
+    if (!project.projectId) {
+      return {
+        success: false,
+        message: 'Create the Smooth CDN project before updating the custom subdomain.',
+      };
+    }
+
+    const response = await this.requestJson(
+      'PATCH',
+      `/projects/${encodeURIComponent(project.projectId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${settings.accessToken}`,
+        },
+        payload: {
+          customSubdomain: normalizedCustomSubdomain,
+        },
+      }
+    );
+
+    if (!response.success) {
+      return {
+        success: false,
+        message: response.message || 'Could not update the Smooth CDN project subdomain.',
+      };
+    }
+
+    const projectData = response.data && typeof response.data === 'object' ? response.data : {};
+    const nextSettings = await settingsService.markProjectCreated(moduleId, {
+      ...project,
+      projectId: String(projectData.id || projectData.project_id || projectData?.project?.id || project.projectId).trim(),
+      projectSlug: extractProjectSlug(projectData) || project.projectSlug,
+      projectType: String(projectData.type || projectData?.project?.type || project.projectType || '').trim(),
+      assetsCount: Math.max(
+        0,
+        Number(
+          projectData.assetsCount ||
+            projectData.assets_count ||
+            projectData?.project?.assetsCount ||
+            projectData?.project?.assets_count ||
+            project.assetsCount ||
+            0
+        )
+      ),
+      customSubdomain: extractCustomSubdomain(projectData) || normalizedCustomSubdomain,
+    });
+
+    return {
+      success: true,
+      settings: nextSettings,
+      customSubdomain: extractCustomSubdomain(projectData) || normalizedCustomSubdomain,
     };
   },
 
@@ -1005,8 +1123,7 @@ module.exports = ({ strapi }) => ({
     const batchSize = Math.max(1, Number(options.batchSize) || normalizedAssets.length || 1);
     const groups = new Map();
     for (const asset of normalizedAssets) {
-      const metaKey = asset.meta ? JSON.stringify(asset.meta) : '';
-      const key = `${asset.path}|${asset.protected ? '1' : '0'}|${metaKey}`;
+      const key = `${asset.path}|${asset.protected ? '1' : '0'}`;
 
       if (!groups.has(key)) {
         groups.set(key, []);
@@ -1026,14 +1143,6 @@ module.exports = ({ strapi }) => ({
         form.set('path', sample.path);
         form.set('protected', sample.protected ? '1' : '0');
         form.set('force', '0');
-        if (sample.meta) {
-          form.set('meta', JSON.stringify(sample.meta));
-
-          if (sample.meta.focus) {
-            form.set('meta[focus][x]', String(sample.meta.focus.x));
-            form.set('meta[focus][y]', String(sample.meta.focus.y));
-          }
-        }
 
         for (const asset of chunk) {
           form.append(
@@ -1041,6 +1150,7 @@ module.exports = ({ strapi }) => ({
             new Blob([asset.body], { type: asset.contentType || 'application/octet-stream' }),
             asset.filename
           );
+          form.append('meta', JSON.stringify(asset.meta || {}));
         }
 
         console.log('[smoothcdn] Upload API payload preview', {
@@ -1049,11 +1159,11 @@ module.exports = ({ strapi }) => ({
           path: sample.path,
           protected: sample.protected ? '1' : '0',
           force: '0',
-          meta: sample.meta || null,
           assets: chunk.map((asset) => ({
             route: asset.route,
             filename: asset.filename,
             contentType: asset.contentType || 'application/octet-stream',
+            meta: asset.meta || {},
             size: Buffer.isBuffer(asset.body)
               ? asset.body.length
               : typeof asset.body === 'string'
@@ -1300,13 +1410,22 @@ module.exports = ({ strapi }) => ({
   },
 
   buildPublicUrlForUploadTarget(path, filename, settings) {
-    if (!settings.userSlug || !settings.projectSlug || !filename) {
+    if (!filename) {
       return '';
     }
 
     const normalizedPath = String(path || '/').trim() === '/'
       ? ''
       : `/${String(path || '').trim().replace(/^\/+|\/+$/g, '')}`;
+    const customSubdomain = normalizeCustomSubdomain(settings.customSubdomain);
+
+    if (customSubdomain) {
+      return `https://${customSubdomain}.smoothcdn.com${normalizedPath}/${encodeURIComponent(filename)}`;
+    }
+
+    if (!settings.userSlug || !settings.projectSlug) {
+      return '';
+    }
 
     return `${CDN_PUBLIC_HOST}/${encodeURIComponent(settings.userSlug)}/${encodeURIComponent(
       settings.projectSlug

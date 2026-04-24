@@ -25,8 +25,29 @@ async function ensureEnabled(strapi, ctx) {
 module.exports = ({ strapi }) => ({
   async updateSettings(ctx) {
     const settingsService = plugin(strapi).service('api-accelerator-settings');
+    const coreSettingsService = plugin(strapi).service('core-settings');
+    const smoothClient = plugin(strapi).service('smooth-client');
+    const payload = ctx.request.body || {};
     const previousSettings = await settingsService.get();
-    const settings = await settingsService.update(ctx.request.body || {});
+    const previousProject = await coreSettingsService.getProject('api-accelerator');
+    const nextCustomSubdomain = String(payload.customSubdomain || '').trim();
+    const customSubdomainChanged = nextCustomSubdomain !== String(previousProject.customSubdomain || '').trim();
+
+    if (customSubdomainChanged) {
+      const projectResult = await smoothClient.updateProjectCustomSubdomain('api-accelerator', nextCustomSubdomain);
+
+      if (!projectResult.success) {
+        ctx.status = 400;
+        ctx.body = {
+          error: {
+            message: projectResult.message || 'Could not update the Smooth CDN project subdomain.',
+          },
+        };
+        return;
+      }
+    }
+
+    const settings = await settingsService.update(payload);
     const enabled = await plugin(strapi).service('module-registry').isEnabled('api-accelerator');
     const protectedAssetsChanged = previousSettings.protectedAssets !== settings.protectedAssets;
     const collectionPageSizeChanged =
@@ -44,20 +65,25 @@ module.exports = ({ strapi }) => ({
       discoveryResult = await plugin(strapi).service('api-accelerator-discovery').discover();
     }
 
-    if (enabled && (protectedAssetsChanged || collectionPageSizeChanged)) {
+    if (enabled && (protectedAssetsChanged || collectionPageSizeChanged || customSubdomainChanged)) {
       syncResult = await plugin(strapi).service('api-accelerator-sync').startManualSyncJob([], {
         trigger: 'settings_change',
-        forceUpload: protectedAssetsChanged,
+        forceUpload: protectedAssetsChanged || customSubdomainChanged,
       });
     }
 
     const endpoints = enabled
       ? await plugin(strapi).service('api-accelerator-repository').all()
       : [];
+    const project = await coreSettingsService.getProject('api-accelerator');
 
     ctx.body = {
       data: {
-        settings,
+        settings: {
+          ...settings,
+          customSubdomain: project.customSubdomain || '',
+        },
+        project,
         endpoints,
         discoveryResult,
         syncJob: syncResult?.job || null,
@@ -93,6 +119,7 @@ module.exports = ({ strapi }) => ({
     const result = await plugin(strapi).service('api-accelerator-sync').startManualSyncJob(ctx.request.body?.routes || [], {
       trigger: 'manual',
       restrictContentTypes: ctx.request.body?.contentTypes || [],
+      forceUpload: Boolean(ctx.request.body?.force || ctx.request.body?.forceUpload),
     });
 
     ctx.body = {

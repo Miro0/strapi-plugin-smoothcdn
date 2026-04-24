@@ -14,6 +14,7 @@ function sanitizeProject(entry = {}, current = {}) {
     projectType: String(merged.projectType || '').trim(),
     projectSlug: String(merged.projectSlug || '').trim(),
     assetsCount: Math.max(0, Number(merged.assetsCount) || 0),
+    customSubdomain: String(merged.customSubdomain || '').trim(),
   };
 }
 

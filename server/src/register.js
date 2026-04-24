@@ -2,6 +2,8 @@
 
 const { CDN_CONNECTOR_UPLOAD_DEBOUNCE_MS, CDN_PUBLIC_HOST } = require('./utils/constants');
 
+const CDN_CUSTOM_SUBDOMAIN_SOURCE = 'https://*.smoothcdn.com';
+
 function normalizePathPrefix(value, fallback = '/admin') {
   const normalized = String(value || '').trim();
 
@@ -208,7 +210,10 @@ module.exports = ({ strapi }) => {
     const cspHeader = ctx.response.get(cspHeaderName);
 
     if (cspHeader) {
-      const nextCsp = appendImgSrcSourceToCspHeader(cspHeader, CDN_PUBLIC_HOST);
+      const nextCsp = appendImgSrcSourceToCspHeader(
+        appendImgSrcSourceToCspHeader(cspHeader, CDN_PUBLIC_HOST),
+        CDN_CUSTOM_SUBDOMAIN_SOURCE
+      );
 
       if (nextCsp && nextCsp !== cspHeader) {
         ctx.set(cspHeaderName, nextCsp);
@@ -222,7 +227,10 @@ module.exports = ({ strapi }) => {
       return;
     }
 
-    const nextReportOnlyCsp = appendImgSrcSourceToCspHeader(cspReportOnlyHeader, CDN_PUBLIC_HOST);
+    const nextReportOnlyCsp = appendImgSrcSourceToCspHeader(
+      appendImgSrcSourceToCspHeader(cspReportOnlyHeader, CDN_PUBLIC_HOST),
+      CDN_CUSTOM_SUBDOMAIN_SOURCE
+    );
     if (nextReportOnlyCsp && nextReportOnlyCsp !== cspReportOnlyHeader) {
       ctx.set(cspReportOnlyHeaderName, nextReportOnlyCsp);
     }

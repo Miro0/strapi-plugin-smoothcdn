@@ -26,10 +26,31 @@ async function ensureEnabled(strapi, ctx) {
 module.exports = ({ strapi }) => ({
   async updateSettings(ctx) {
     const settingsService = plugin(strapi).service('cdn-connector-settings');
+    const coreSettingsService = plugin(strapi).service('core-settings');
+    const smoothClient = plugin(strapi).service('smooth-client');
     const syncService = plugin(strapi).service('cdn-connector-sync');
     const offloadService = plugin(strapi).service('cdn-connector-offload');
+    const payload = ctx.request.body || {};
     const previousSettings = await settingsService.get();
-    const settings = await settingsService.update(ctx.request.body || {});
+    const previousProject = await coreSettingsService.getProject('cdn-connector');
+    const nextCustomSubdomain = String(payload.customSubdomain || '').trim();
+    const customSubdomainChanged = nextCustomSubdomain !== String(previousProject.customSubdomain || '').trim();
+
+    if (customSubdomainChanged) {
+      const projectResult = await smoothClient.updateProjectCustomSubdomain('cdn-connector', nextCustomSubdomain);
+
+      if (!projectResult.success) {
+        ctx.status = 400;
+        ctx.body = {
+          error: {
+            message: projectResult.message || 'Could not update the Smooth CDN project subdomain.',
+          },
+        };
+        return;
+      }
+    }
+
+    const settings = await settingsService.update(payload);
     const enabled = await plugin(strapi).service('module-registry').isEnabled('cdn-connector');
     const shouldResync =
       previousSettings.protectedAssets !== settings.protectedAssets ||
@@ -46,9 +67,15 @@ module.exports = ({ strapi }) => ({
       });
     }
 
+    const project = await coreSettingsService.getProject('cdn-connector');
+
     ctx.body = {
       data: {
-        settings,
+        settings: {
+          ...settings,
+          customSubdomain: project.customSubdomain || '',
+        },
+        project,
         mediaItems: await syncService.listMediaItems(),
         syncResult,
         syncJob: syncResult?.job || null,

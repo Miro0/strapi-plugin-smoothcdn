@@ -39,7 +39,7 @@ function defaultApiAcceleratorSettings() {
     lastDiscoveryAt: '',
     lastSyncAt: '',
     lastAutoSyncAt: '',
-    debounceMs: 5000,
+    customSubdomain: '',
   };
 }
 
@@ -51,6 +51,7 @@ function defaultCdnConnectorSettings() {
     syncAllFormats: true,
     lastSyncAt: '',
     lastAutoSyncAt: '',
+    customSubdomain: '',
   };
 }
 
@@ -125,7 +126,7 @@ function normalizeApiAcceleratorForSubmit(settings) {
     blockGetMode: String(settings.blockGetMode || 'no'),
     collectionSyncPerPage: Number(settings.collectionSyncPerPage) || 50,
     autoSyncFrequency: String(settings.autoSyncFrequency || 'hourly'),
-    debounceMs: Number(settings.debounceMs) || 5000,
+    customSubdomain: String(settings.customSubdomain || '').trim(),
   };
 }
 
@@ -197,6 +198,7 @@ function normalizeCdnConnectorForSubmit(settings) {
     offloadLocalFiles: Boolean(settings.offloadLocalFiles),
     autoSyncFrequency: String(settings.autoSyncFrequency || 'hourly'),
     syncAllFormats: Boolean(settings.syncAllFormats),
+    customSubdomain: String(settings.customSubdomain || '').trim(),
   };
 }
 
@@ -205,7 +207,6 @@ function normalizeApiAcceleratorSettings(settings = {}) {
   const blockGetMode = String(settings.blockGetMode || defaults.blockGetMode);
   const autoSyncFrequency = String(settings.autoSyncFrequency || defaults.autoSyncFrequency);
   const collectionSyncPerPage = Number(settings.collectionSyncPerPage) || defaults.collectionSyncPerPage;
-  const debounceMs = Number(settings.debounceMs) || defaults.debounceMs;
 
   return {
     ...defaults,
@@ -220,7 +221,7 @@ function normalizeApiAcceleratorSettings(settings = {}) {
     lastDiscoveryAt: String(settings.lastDiscoveryAt || '').trim(),
     lastSyncAt: String(settings.lastSyncAt || '').trim(),
     lastAutoSyncAt: String(settings.lastAutoSyncAt || '').trim(),
-    debounceMs: Math.max(500, debounceMs),
+    customSubdomain: String(settings.customSubdomain || '').trim(),
   };
 }
 
@@ -242,6 +243,7 @@ function normalizeCdnConnectorSettings(settings = {}) {
       : defaults.syncAllFormats,
     lastSyncAt: String(settings.lastSyncAt || '').trim(),
     lastAutoSyncAt: String(settings.lastAutoSyncAt || '').trim(),
+    customSubdomain: String(settings.customSubdomain || '').trim(),
   };
 }
 
@@ -410,6 +412,26 @@ function mergeModulesWithAccountProjects(currentModules = [], nextAccount = {}) 
     ...module,
     project: accountProjects[module.id] || module.project || null,
   }));
+}
+
+function mergeModuleProject(currentModules = [], moduleId, project = {}) {
+  const normalizedModuleId = String(moduleId || '').trim();
+
+  if (!normalizedModuleId || !project || typeof project !== 'object') {
+    return currentModules;
+  }
+
+  return currentModules.map((module) =>
+    module.id === normalizedModuleId
+      ? {
+          ...module,
+          project: {
+            ...(module.project || {}),
+            ...project,
+          },
+        }
+      : module
+  );
 }
 
 function getOverviewProjectModule(modules = []) {
@@ -706,25 +728,45 @@ function buildUploadTargetsForRouteAssets(route, fileCount) {
   return targets;
 }
 
-function buildPublicJsonUrlForTarget(target, userSlug, projectSlug) {
+function normalizeCustomSubdomain(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (!normalized) {
+    return '';
+  }
+
+  const hostCandidate = normalized
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '')
+    .replace(/\.smoothcdn\.com$/i, '')
+    .replace(/^\.+|\.+$/g, '');
+
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(hostCandidate) ? hostCandidate : '';
+}
+
+function buildPublicJsonUrlForTarget(target, userSlug, projectSlug, customSubdomain = '') {
   const normalizedUserSlug = String(userSlug || '').trim();
   const normalizedProjectSlug = String(projectSlug || '').trim();
+  const normalizedCustomSubdomain = normalizeCustomSubdomain(customSubdomain);
+  const normalizedPath = String(target.path || '/').trim() === '/'
+    ? ''
+    : `/${String(target.path || '').trim().replace(/^\/+|\/+$/g, '')}`;
+
+  if (normalizedCustomSubdomain) {
+    return `https://${normalizedCustomSubdomain}.smoothcdn.com${normalizedPath}/${encodeURIComponent(target.filename)}`;
+  }
 
   if (!normalizedUserSlug || !normalizedProjectSlug) {
     return '';
   }
-
-  const normalizedPath = String(target.path || '/').trim() === '/'
-    ? ''
-    : `/${String(target.path || '').trim().replace(/^\/+|\/+$/g, '')}`;
 
   return `${CDN_PUBLIC_HOST}/${encodeURIComponent(normalizedUserSlug)}/${encodeURIComponent(
     normalizedProjectSlug
   )}${normalizedPath}/${encodeURIComponent(target.filename)}`;
 }
 
-function buildPublicJsonUrl(route, userSlug, projectSlug) {
-  return buildPublicJsonUrlForTarget(buildUploadTargetForRoute(route), userSlug, projectSlug);
+function buildPublicJsonUrl(route, userSlug, projectSlug, customSubdomain = '') {
+  return buildPublicJsonUrlForTarget(buildUploadTargetForRoute(route), userSlug, projectSlug, customSubdomain);
 }
 
 function toggleRouteSelection(currentRoutes = [], route, checked) {
@@ -751,19 +793,6 @@ function normalizeStringList(values) {
 
 function normalizeRouteList(routes) {
   return normalizeStringList(routes);
-}
-
-function formatEndpointStatus(value) {
-  const normalized = String(value || '').trim();
-
-  switch (normalized) {
-    case 'error':
-      return 'failed';
-    case '':
-      return 'unknown';
-    default:
-      return normalized;
-  }
 }
 
 function formatEndpointSyncStatus(value) {
@@ -1235,7 +1264,7 @@ function EndpointTableCard({
           </Typography>
         ) : (
           <>
-            <Table colCount={5} rowCount={endpoints.length + 1}>
+            <Table colCount={4} rowCount={endpoints.length + 1}>
               <Thead>
                 <Tr>
                   <Th>
@@ -1254,12 +1283,7 @@ function EndpointTableCard({
                   </Th>
                   <Th>
                     <Typography variant="sigma" textColor="neutral600">
-                      Status
-                    </Typography>
-                  </Th>
-                  <Th>
-                    <Typography variant="sigma" textColor="neutral600">
-                      Sync
+                      Sync status
                     </Typography>
                   </Th>
                   <Th>
@@ -1312,9 +1336,6 @@ function EndpointTableCard({
                             </Typography>
                           ) : null}
                         </Flex>
-                      </Td>
-                      <Td>
-                        <Typography textColor="neutral800">{formatEndpointStatus(entry.status)}</Typography>
                       </Td>
                       <Td>
                         <Flex direction="column" gap={1} alignItems="stretch">
@@ -1388,6 +1409,7 @@ function MediaTableCard({
   onSyncOne,
   onUnsyncOne,
   onCopyUrl,
+  copiedKey,
   expandedItemIds,
   onToggleExpanded,
   isOffloadEnabled = false,
@@ -1572,10 +1594,10 @@ function MediaTableCard({
                             </MiniActionButton>
                             <MiniActionButton
                               type="button"
-                              onClick={() => onCopyUrl(originalEntry?.publicUrl)}
+                              onClick={() => onCopyUrl(originalEntry?.publicUrl, `cdn:${item.fileId}:original`)}
                               disabled={!originalEntry?.publicUrl}
                             >
-                              Copy
+                              {copiedKey === `cdn:${item.fileId}:original` ? 'Copied' : 'Copy'}
                             </MiniActionButton>
                           </Flex>
                           {variantEntries.length > 0 ? (
@@ -1612,10 +1634,17 @@ function MediaTableCard({
                                         </MiniActionButton>
                                         <MiniActionButton
                                           type="button"
-                                          onClick={() => onCopyUrl(entry.publicUrl)}
+                                          onClick={() =>
+                                            onCopyUrl(
+                                              entry.publicUrl,
+                                              `cdn:${item.fileId}:${entry.key || entry.path}:${entry.filename}`
+                                            )
+                                          }
                                           disabled={!entry.publicUrl}
                                         >
-                                          Copy
+                                          {copiedKey === `cdn:${item.fileId}:${entry.key || entry.path}:${entry.filename}`
+                                            ? 'Copied'
+                                            : 'Copy'}
                                         </MiniActionButton>
                                       </Flex>
                                     </CompactActionRow>
@@ -1673,6 +1702,7 @@ export default function App() {
   const [expandedSyncedFileRoutes, setExpandedSyncedFileRoutes] = React.useState([]);
   const [message, setMessage] = React.useState(null);
   const [busyAction, setBusyAction] = React.useState('');
+  const [copiedKey, setCopiedKey] = React.useState('');
   const [isLoginPolling, setIsLoginPolling] = React.useState(false);
   const [overviewNoticeDismissed, setOverviewNoticeDismissed] = React.useState(false);
   const [projectToken, setProjectToken] = React.useState('');
@@ -1682,6 +1712,7 @@ export default function App() {
   const loginPollingKeyRef = React.useRef('');
   const apiSyncPollingTimerRef = React.useRef(null);
   const cdnSyncPollingTimerRef = React.useRef(null);
+  const copiedKeyTimerRef = React.useRef(null);
 
   const isBusy = Boolean(busyAction);
   const isInteractionBusy = isBusy || isLoginPolling;
@@ -1733,8 +1764,16 @@ export default function App() {
 
   const hydrate = React.useCallback((payload) => {
     const nextAccount = payload?.core?.account || defaultAccount();
-    const nextApiAccelerator = normalizeApiAcceleratorSettings(payload?.apiAccelerator?.settings || {});
-    const nextCdnConnector = normalizeCdnConnectorSettings(payload?.cdnConnector?.settings || {});
+    const moduleProjects =
+      nextAccount?.moduleProjects && typeof nextAccount.moduleProjects === 'object' ? nextAccount.moduleProjects : {};
+    const nextApiAccelerator = normalizeApiAcceleratorSettings({
+      ...(payload?.apiAccelerator?.settings || {}),
+      customSubdomain: moduleProjects?.['api-accelerator']?.customSubdomain || '',
+    });
+    const nextCdnConnector = normalizeCdnConnectorSettings({
+      ...(payload?.cdnConnector?.settings || {}),
+      customSubdomain: moduleProjects?.['cdn-connector']?.customSubdomain || '',
+    });
 
     setAccount({
       ...defaultAccount(),
@@ -2177,6 +2216,13 @@ export default function App() {
 
   React.useEffect(() => () => stopCdnSyncPolling(), [stopCdnSyncPolling]);
 
+  React.useEffect(() => () => {
+    if (copiedKeyTimerRef.current && typeof window !== 'undefined') {
+      window.clearTimeout(copiedKeyTimerRef.current);
+      copiedKeyTimerRef.current = null;
+    }
+  }, []);
+
   React.useEffect(() => {
     if (!account.connected) {
       return undefined;
@@ -2477,6 +2523,20 @@ export default function App() {
           setApiAcceleratorSettings(normalizeApiAcceleratorSettings(response.data.data.settings));
         }
 
+        if (response.data?.data?.project) {
+          setModules((current) => mergeModuleProject(current, 'api-accelerator', response.data.data.project));
+          setAccount((current) => ({
+            ...current,
+            moduleProjects: {
+              ...(current.moduleProjects || {}),
+              'api-accelerator': {
+                ...(current.moduleProjects?.['api-accelerator'] || {}),
+                ...response.data.data.project,
+              },
+            },
+          }));
+        }
+
         if (Array.isArray(response.data?.data?.endpoints)) {
           setApiAcceleratorEndpoints(response.data.data.endpoints);
         }
@@ -2498,7 +2558,7 @@ export default function App() {
         }
 
         if (data?.syncTriggered) {
-          return 'API Accelerator settings saved. Protected assets changed, so synced endpoints are being refreshed.';
+          return 'API Accelerator settings saved. Synced endpoints are being refreshed.';
         }
 
         return 'API Accelerator settings saved.';
@@ -2517,6 +2577,20 @@ export default function App() {
 
         if (response.data?.data?.settings) {
           setCdnConnectorSettings(normalizeCdnConnectorSettings(response.data.data.settings));
+        }
+
+        if (response.data?.data?.project) {
+          setModules((current) => mergeModuleProject(current, 'cdn-connector', response.data.data.project));
+          setAccount((current) => ({
+            ...current,
+            moduleProjects: {
+              ...(current.moduleProjects || {}),
+              'cdn-connector': {
+                ...(current.moduleProjects?.['cdn-connector'] || {}),
+                ...response.data.data.project,
+              },
+            },
+          }));
         }
 
         if (Array.isArray(response.data?.data?.mediaItems)) {
@@ -2548,7 +2622,9 @@ export default function App() {
     setMessage(null);
 
     try {
-      const response = await client.post(`/${pluginId}/modules/cdn-connector/sync`, {});
+      const response = await client.post(`/${pluginId}/modules/cdn-connector/sync`, {
+        force: true,
+      });
       const nextJob = normalizeCdnConnectorSyncJob(response.data?.data?.job || {});
 
       setCdnConnectorSyncJob(nextJob);
@@ -2582,6 +2658,7 @@ export default function App() {
     try {
       const response = await client.post(`/${pluginId}/modules/cdn-connector/sync`, {
         fileId,
+        force: true,
       });
       const nextJob = normalizeCdnConnectorSyncJob(response.data?.data?.job || {});
 
@@ -2643,7 +2720,9 @@ export default function App() {
     setMessage(null);
 
     try {
-      const response = await client.post(`/${pluginId}/modules/api-accelerator/sync`, {});
+      const response = await client.post(`/${pluginId}/modules/api-accelerator/sync`, {
+        force: true,
+      });
       const nextJob = normalizeApiAcceleratorSyncJob(response.data?.data?.job || {});
 
       setApiAcceleratorSyncJob(nextJob);
@@ -2701,10 +2780,26 @@ export default function App() {
           routes: normalizedRoutes.length > 1 ? normalizedRoutes : undefined,
           syncable,
         });
+
+        if (syncable) {
+          const response = await client.post(`/${pluginId}/modules/api-accelerator/sync`, {
+            routes: normalizedRoutes,
+            force: true,
+          });
+          const nextJob = normalizeApiAcceleratorSyncJob(response.data?.data?.job || {});
+
+          setApiAcceleratorSyncJob(nextJob);
+
+          if (nextJob.status === 'running') {
+            startApiSyncPolling();
+          }
+        }
       },
       normalizedRoutes.length === 1
-        ? `${normalizedRoutes[0]} ${syncable ? 'added to' : 'removed from'} synced endpoints.`
-        : `${normalizedRoutes.length} endpoints updated.`
+        ? `${normalizedRoutes[0]} ${syncable ? 'sync started.' : 'removed from synced endpoints.'}`
+        : syncable
+          ? `${normalizedRoutes.length} endpoint sync started.`
+          : `${normalizedRoutes.length} endpoints updated.`
     );
   }
 
@@ -2750,7 +2845,25 @@ export default function App() {
     });
   }
 
-  async function copyVariantUrl(url) {
+  function markCopied(key) {
+    const normalizedKey = String(key || '').trim();
+
+    if (!normalizedKey || typeof window === 'undefined') {
+      return;
+    }
+
+    if (copiedKeyTimerRef.current) {
+      window.clearTimeout(copiedKeyTimerRef.current);
+    }
+
+    setCopiedKey(normalizedKey);
+    copiedKeyTimerRef.current = window.setTimeout(() => {
+      setCopiedKey((current) => (current === normalizedKey ? '' : current));
+      copiedKeyTimerRef.current = null;
+    }, 1500);
+  }
+
+  async function copyVariantUrl(url, key = '') {
     if (!url) {
       return;
     }
@@ -2758,6 +2871,7 @@ export default function App() {
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
+        markCopied(key || url);
         setMessage({
           type: 'success',
           text: 'URL copied.',
@@ -3137,27 +3251,24 @@ export default function App() {
                 </SelectField>
 
                 <TextField
-                  label="Debounce after content change (ms)"
-                  name="debounceMs"
-                  type="number"
+                  label="Custom subdomain"
+                  hint="CDN subdomain to point to your project. Default one is https://cdn.smoothcdn.com/[user]/[project]. You can replace it with https://[custom-subdomain].smoothcdn.com."
+                  name="api-accelerator-custom-subdomain"
                   disabled={isApiAcceleratorBusy}
-                  value={String(apiAcceleratorSettings.debounceMs || 5000)}
-                  onChange={(event) => updateApiAcceleratorField('debounceMs', Number(event.target.value || 5000))}
+                  value={apiAcceleratorSettings.customSubdomain || ''}
+                  onChange={(event) => updateApiAcceleratorField('customSubdomain', event.target.value)}
                 />
 
-                <Field.Root hint="Upload generated JSON snapshots as protected assets." name="protectedAssets">
-                  <Field.Label>Protected assets</Field.Label>
-                  <ToggleMaxWidth>
-                    <Toggle
-                      checked={Boolean(apiAcceleratorSettings.protectedAssets)}
-                      disabled={isApiAcceleratorBusy}
-                      offLabel="Disabled"
-                      onLabel="Enabled"
-                      onChange={(event) => updateApiAcceleratorField('protectedAssets', event.target.checked)}
-                    />
-                  </ToggleMaxWidth>
-                  <Field.Hint />
-                </Field.Root>
+                <SelectField
+                  label="Protected assets"
+                  hint="Upload generated JSON snapshots as protected assets."
+                  value={apiAcceleratorSettings.protectedAssets ? 'enabled' : 'disabled'}
+                  disabled={isApiAcceleratorBusy}
+                  onChange={(value) => updateApiAcceleratorField('protectedAssets', value === 'enabled')}
+                >
+                  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
+                  <SingleSelectOption value="enabled">Enabled</SingleSelectOption>
+                </SelectField>
               </Flex>
 
               <Grid.Root gap={4}>
@@ -3170,7 +3281,7 @@ export default function App() {
               </Grid.Root>
 
               <Flex justifyContent="flex-end">
-                <Button variant="secondary" onClick={saveApiAcceleratorSettings} disabled={isApiAcceleratorBusy}>
+                <Button onClick={saveApiAcceleratorSettings} disabled={isApiAcceleratorBusy}>
                   {busyAction === 'Saving API Accelerator' ? 'Saving...' : 'Save settings'}
                 </Button>
               </Flex>
@@ -3216,11 +3327,12 @@ export default function App() {
                   : [];
                 const syncedFilesExpanded = expandedSyncedFileRoutes.includes(route);
                 const singleEntryUrl = entry.kind !== 'collection' && entry.syncStatus === 'uploaded'
-                  ? buildPublicJsonUrl(
-                      entry.assetRoute || route,
-                      account.userSlug,
-                      apiAcceleratorProject?.projectSlug
-                    )
+                    ? buildPublicJsonUrl(
+                        entry.assetRoute || route,
+                        account.userSlug,
+                        apiAcceleratorProject?.projectSlug,
+                        apiAcceleratorProject?.customSubdomain || apiAcceleratorSettings.customSubdomain
+                      )
                   : '';
 
                 return (
@@ -3239,10 +3351,10 @@ export default function App() {
                         </MiniActionButton>
                         <MiniActionButton
                           type="button"
-                          onClick={() => copyVariantUrl(singleEntryUrl)}
+                          onClick={() => copyVariantUrl(singleEntryUrl, `api:${route}:single`)}
                           disabled={!singleEntryUrl}
                         >
-                          Copy
+                          {copiedKey === `api:${route}:single` ? 'Copied' : 'Copy'}
                         </MiniActionButton>
                       </Flex>
                     ) : null}
@@ -3266,7 +3378,8 @@ export default function App() {
                                   ? buildPublicJsonUrl(
                                       variant.assetRoute || variant.route,
                                       account.userSlug,
-                                      apiAcceleratorProject?.projectSlug
+                                      apiAcceleratorProject?.projectSlug,
+                                      apiAcceleratorProject?.customSubdomain || apiAcceleratorSettings.customSubdomain
                                     )
                                   : '';
 
@@ -3301,10 +3414,10 @@ export default function App() {
                                     </MiniActionButton>
                                     <MiniActionButton
                                       type="button"
-                                      onClick={() => copyVariantUrl(variantUrl)}
+                                      onClick={() => copyVariantUrl(variantUrl, `api:${route}:variant:${variant.route}`)}
                                       disabled={!variantUrl}
                                     >
-                                      Copy
+                                      {copiedKey === `api:${route}:variant:${variant.route}` ? 'Copied' : 'Copy'}
                                     </MiniActionButton>
                                   </Flex>
                                 </CompactActionRow>
@@ -3330,7 +3443,8 @@ export default function App() {
                               const fileUrl = buildPublicJsonUrlForTarget(
                                 target,
                                 account.userSlug,
-                                apiAcceleratorProject?.projectSlug
+                                apiAcceleratorProject?.projectSlug,
+                                apiAcceleratorProject?.customSubdomain || apiAcceleratorSettings.customSubdomain
                               );
                               const relativeTarget = `${target.path === '/' ? '' : target.path}/${target.filename}`;
 
@@ -3349,10 +3463,10 @@ export default function App() {
                                     </MiniActionButton>
                                     <MiniActionButton
                                       type="button"
-                                      onClick={() => copyVariantUrl(fileUrl)}
+                                      onClick={() => copyVariantUrl(fileUrl, `api:${route}:file:${target.path}:${target.filename}`)}
                                       disabled={!fileUrl}
                                     >
-                                      Copy
+                                      {copiedKey === `api:${route}:file:${target.path}:${target.filename}` ? 'Copied' : 'Copy'}
                                     </MiniActionButton>
                                   </Flex>
                                 </CompactActionRow>
@@ -3453,56 +3567,47 @@ export default function App() {
                   <SingleSelectOption value="off">Off</SingleSelectOption>
                 </SelectField>
 
-                <Field.Root
-                  hint="After each successful sync, remove local files from Strapi storage and serve synced assets from Smooth CDN URLs."
-                  name="cdn-connector-offload-local-files"
-                >
-                  <Field.Label>Offload local files</Field.Label>
-                  <ToggleMaxWidth>
-                    <Toggle
-                      checked={Boolean(cdnConnectorSettings.offloadLocalFiles)}
-                      disabled={isCdnConnectorBusy}
-                      offLabel="Disabled"
-                      onLabel="Enabled"
-                      onChange={(event) => updateCdnConnectorField('offloadLocalFiles', event.target.checked)}
-                    />
-                  </ToggleMaxWidth>
-                  <Field.Hint />
-                </Field.Root>
+                <TextField
+                  label="Custom subdomain"
+                  hint="CDN subdomain to point to your project. Default one is https://cdn.smoothcdn.com/[user]/[project]. You can replace it with https://[custom-subdomain].smoothcdn.com."
+                  name="cdn-connector-custom-subdomain"
+                  disabled={isCdnConnectorBusy}
+                  value={cdnConnectorSettings.customSubdomain || ''}
+                  onChange={(event) => updateCdnConnectorField('customSubdomain', event.target.value)}
+                />
 
-                <Field.Root
-                  hint="Upload media files as protected assets in Smooth CDN."
-                  name="cdn-connector-protected-assets"
-                >
-                  <Field.Label>Protected assets</Field.Label>
-                  <ToggleMaxWidth>
-                    <Toggle
-                      checked={Boolean(cdnConnectorSettings.protectedAssets)}
-                      disabled={isCdnConnectorBusy}
-                      offLabel="Disabled"
-                      onLabel="Enabled"
-                      onChange={(event) => updateCdnConnectorField('protectedAssets', event.target.checked)}
-                    />
-                  </ToggleMaxWidth>
-                  <Field.Hint />
-                </Field.Root>
-
-                <Field.Root
+                <SelectField
+                  label="Sync generated image sizes"
                   hint="Sync the original upload only, or include generated image sizes as separate synced entries."
-                  name="cdn-connector-sync-all-formats"
+                  value={apiAcceleratorSettings.syncAllFormats ? 'enabled' : 'disabled'}
+                  disabled={isApiAcceleratorBusy}
+                  onChange={(value) => updateApiAcceleratorField('syncAllFormats', value === 'enabled')}
                 >
-                  <Field.Label>Sync generated image sizes</Field.Label>
-                  <ToggleMaxWidth>
-                    <Toggle
-                      checked={Boolean(cdnConnectorSettings.syncAllFormats)}
-                      disabled={isCdnConnectorBusy}
-                      offLabel="Original only"
-                      onLabel="Original + sizes"
-                      onChange={(event) => updateCdnConnectorField('syncAllFormats', event.target.checked)}
-                    />
-                  </ToggleMaxWidth>
-                  <Field.Hint />
-                </Field.Root>
+                  <SingleSelectOption value="enabled">All sizes</SingleSelectOption>
+                  <SingleSelectOption value="disabled">Only original sizes</SingleSelectOption>
+                </SelectField>
+
+                <SelectField
+                  label="Offload local files"
+                  hint="After each successful sync, remove local files from Strapi storage and serve synced assets from Smooth CDN URLs."
+                  value={apiAcceleratorSettings.offloadLocalFiles ? 'enabled' : 'disabled'}
+                  disabled={isApiAcceleratorBusy}
+                  onChange={(value) => updateApiAcceleratorField('offloadLocalFiles', value === 'enabled')}
+                >
+                  <SingleSelectOption value="enabled">Enabled</SingleSelectOption>
+                  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
+                </SelectField>
+
+                <SelectField
+                  label="Protected assets"
+                  hint="Upload media files as protected assets in Smooth CDN."
+                  value={cdnConnectorSettings.protectedAssets ? 'enabled' : 'disabled'}
+                  disabled={isCdnConnectorBusy}
+                  onChange={(value) => updateCdnConnectorField('protectedAssets', value === 'enabled')}
+                >
+                  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
+                  <SingleSelectOption value="enabled">Enabled</SingleSelectOption>
+                </SelectField>
 
               </Flex>
 
@@ -3516,7 +3621,7 @@ export default function App() {
               </Grid.Root>
 
               <Flex justifyContent="flex-end">
-                <Button variant="secondary" onClick={saveCdnConnectorSettings} disabled={isCdnConnectorBusy}>
+                <Button onClick={saveCdnConnectorSettings} disabled={isCdnConnectorBusy}>
                   {busyAction === 'Saving CDN Connector' ? 'Saving...' : 'Save settings'}
                 </Button>
               </Flex>
@@ -3548,6 +3653,7 @@ export default function App() {
             onSyncOne={syncSingleMediaItem}
             onUnsyncOne={unsyncSingleMediaItem}
             onCopyUrl={copyVariantUrl}
+            copiedKey={copiedKey}
             expandedItemIds={expandedCdnConnectorItemIds}
             onToggleExpanded={toggleExpandedCdnConnectorItem}
             isOffloadEnabled={Boolean(cdnConnectorSettings.offloadLocalFiles)}
@@ -3656,6 +3762,9 @@ export default function App() {
                 </Typography>
                 <Typography variant="pi" textColor="neutral600">
                   Slug: {project?.projectSlug || 'Not created'}
+                </Typography>
+                <Typography variant="pi" textColor="neutral600">
+                  Custom subdomain: {project?.customSubdomain || 'Not set'}
                 </Typography>
                 <Typography variant="pi" textColor="neutral600">
                   Project ID: {project?.projectId || 'Not available'}

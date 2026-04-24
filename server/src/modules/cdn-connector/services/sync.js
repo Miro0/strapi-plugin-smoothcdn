@@ -63,7 +63,7 @@ function normalizeTimestamp(value) {
 }
 
 function normalizeFocusAxis(value) {
-  const normalized = Number(value);
+  const normalized = parseInt(value, 10);
   return Number.isFinite(normalized) ? normalized : null;
 }
 
@@ -86,8 +86,20 @@ function normalizeFocusPoint(value) {
     return null;
   }
 
-  const x = normalizeFocusAxis(value.x);
-  const y = normalizeFocusAxis(value.y);
+  const x = normalizeFocusAxis(
+    value.x ??
+    value.left ??
+    value.focusX ??
+    value.focus_x ??
+    value.cx
+  );
+  const y = normalizeFocusAxis(
+    value.y ??
+    value.top ??
+    value.focusY ??
+    value.focus_y ??
+    value.cy
+  );
 
   if (x === null || y === null) {
     return null;
@@ -140,6 +152,8 @@ function extractFocusPointFromUnknownValue(value) {
     value.focus,
     value.focalPoint,
     value.focusPoint,
+    value.focus_point,
+    value.focal_point,
   ];
 
   for (const candidate of nestedCandidates) {
@@ -179,6 +193,10 @@ function resolveFocusPoint(signedFile = {}, rawFile = {}) {
     rawFile?.provider_metadata?.focus,
     signedFile?.provider_metadata,
     rawFile?.provider_metadata,
+    signedFile?.formats,
+    rawFile?.formats,
+    signedFile,
+    rawFile,
   ];
 
   for (const candidate of candidates) {

@@ -4,6 +4,8 @@ const { DEFAULT_SYNC_PAGE_SIZE } = require('../../../utils/constants');
 const { nowIso } = require('../../../utils/helpers');
 const pluginId = require('../../../plugin-id');
 
+const CONTENT_CHANGE_DEBOUNCE_MS = 5000;
+
 module.exports = ({ strapi }) => ({
   defaults() {
     return {
@@ -14,7 +16,7 @@ module.exports = ({ strapi }) => ({
       lastDiscoveryAt: '',
       lastSyncAt: '',
       lastAutoSyncAt: '',
-      debounceMs: 5000,
+      debounceMs: CONTENT_CHANGE_DEBOUNCE_MS,
     };
   },
 
@@ -35,7 +37,6 @@ module.exports = ({ strapi }) => ({
     };
 
     const collectionSyncPerPage = Number(merged.collectionSyncPerPage) || DEFAULT_SYNC_PAGE_SIZE;
-    const debounceMs = Number(merged.debounceMs) || 5000;
 
     return {
       protectedAssets: Boolean(merged.protectedAssets),
@@ -51,7 +52,7 @@ module.exports = ({ strapi }) => ({
       lastDiscoveryAt: String(merged.lastDiscoveryAt || '').trim(),
       lastSyncAt: String(merged.lastSyncAt || '').trim(),
       lastAutoSyncAt: String(merged.lastAutoSyncAt || '').trim(),
-      debounceMs: Math.max(500, debounceMs),
+      debounceMs: CONTENT_CHANGE_DEBOUNCE_MS,
     };
   },
 

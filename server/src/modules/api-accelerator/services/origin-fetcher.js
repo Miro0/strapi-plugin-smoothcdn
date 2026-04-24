@@ -275,23 +275,24 @@ module.exports = ({ strapi }) => ({
         }
 
         const fileId = parseEntityIdentifier(resolved.identifier);
-        const rawFile = await strapi.db.query('plugin::upload.file').findOne({
-          where: {
-            id: fileId,
-          },
+        let rawFile = await strapi.db.query('plugin::upload.file').findOne({
+          where: /^\d+$/.test(String(resolved.identifier || '').trim())
+            ? { id: fileId }
+            : { documentId: String(resolved.identifier || '').trim() },
         });
+
+        if (!rawFile && /^\d+$/.test(String(resolved.identifier || '').trim())) {
+          rawFile = await strapi.db.query('plugin::upload.file').findOne({
+            where: {
+              documentId: String(resolved.identifier || '').trim(),
+            },
+          });
+        }
+
         const data = rawFile ? await strapi.plugin('upload').service('file').signFileUrls(rawFile) : null;
 
         if (!data) {
-          return {
-            success: false,
-            status: 404,
-            data: null,
-            meta: {},
-            raw: null,
-            url: `internal:${normalizedRoute}`,
-            errorMessage: 'Content entry not found.',
-          };
+          return null;
         }
 
         return {
