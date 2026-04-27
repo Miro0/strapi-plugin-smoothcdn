@@ -24,7 +24,9 @@ Smooth CDN for Strapi is a modular plugin that connects Strapi media and API ass
 
 Install the plugin in your Strapi project:
 
+```
 npm install strapi-plugin-smoothcdn
+```
 
 Enable the plugin in config/plugins.js:
 
@@ -39,11 +41,11 @@ module.exports = {
 Or in config/plugins.ts:
 
 ```js
-export default {
+export default () => ({
   smoothcdn: {
     enabled: true,
   },
-};
+});
 ```
 
 Restart Strapi and open the Smooth CDN plugin from the admin sidebar.
