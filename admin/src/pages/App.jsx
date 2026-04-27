@@ -3266,8 +3266,8 @@ export default function App() {
                   disabled={isApiAcceleratorBusy}
                   onChange={(value) => updateApiAcceleratorField('protectedAssets', value === 'enabled')}
                 >
-                  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
                   <SingleSelectOption value="enabled">Enabled</SingleSelectOption>
+                  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
                 </SelectField>
               </Flex>
 
@@ -3576,27 +3576,16 @@ export default function App() {
                   onChange={(event) => updateCdnConnectorField('customSubdomain', event.target.value)}
                 />
 
-                <SelectField
-                  label="Sync generated image sizes"
-                  hint="Sync the original upload only, or include generated image sizes as separate synced entries."
-                  value={apiAcceleratorSettings.syncAllFormats ? 'enabled' : 'disabled'}
-                  disabled={isApiAcceleratorBusy}
-                  onChange={(value) => updateApiAcceleratorField('syncAllFormats', value === 'enabled')}
-                >
-                  <SingleSelectOption value="enabled">All sizes</SingleSelectOption>
-                  <SingleSelectOption value="disabled">Only original sizes</SingleSelectOption>
-                </SelectField>
-
-                <SelectField
-                  label="Offload local files"
-                  hint="After each successful sync, remove local files from Strapi storage and serve synced assets from Smooth CDN URLs."
-                  value={apiAcceleratorSettings.offloadLocalFiles ? 'enabled' : 'disabled'}
-                  disabled={isApiAcceleratorBusy}
-                  onChange={(value) => updateApiAcceleratorField('offloadLocalFiles', value === 'enabled')}
-                >
-                  <SingleSelectOption value="enabled">Enabled</SingleSelectOption>
-                  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
-                </SelectField>
+                {/*<SelectField*/}
+                {/*  label="Offload local files"*/}
+                {/*  hint="After each successful sync, remove local files from Strapi storage and serve synced assets from Smooth CDN URLs."*/}
+                {/*  value={cdnConnectorSettings.offloadLocalFiles ? 'enabled' : 'disabled'}*/}
+                {/*  disabled={isCdnConnectorBusy}*/}
+                {/*  onChange={(value) => updateCdnConnectorField('offloadLocalFiles', value === 'enabled')}*/}
+                {/*>*/}
+                {/*  <SingleSelectOption value="enabled">Enabled</SingleSelectOption>*/}
+                {/*  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>*/}
+                {/*</SelectField>*/}
 
                 <SelectField
                   label="Protected assets"

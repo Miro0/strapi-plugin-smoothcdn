@@ -458,7 +458,7 @@ module.exports = ({ strapi }) => {
       },
     ];
 
-    if (settings.syncAllFormats && mediaItem.isImage) {
+    if (mediaItem.isImage) {
       for (const [variantKey, variant] of Object.entries(mediaItem.formats || {})) {
         if (!variant || typeof variant !== 'object' || !variant.url) {
           continue;

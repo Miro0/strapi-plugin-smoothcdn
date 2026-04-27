@@ -54,7 +54,6 @@ module.exports = ({ strapi }) => ({
     const enabled = await plugin(strapi).service('module-registry').isEnabled('cdn-connector');
     const shouldResync =
       previousSettings.protectedAssets !== settings.protectedAssets ||
-      previousSettings.syncAllFormats !== settings.syncAllFormats ||
       (previousSettings.offloadLocalFiles !== settings.offloadLocalFiles && settings.offloadLocalFiles);
     let syncResult = null;
 
