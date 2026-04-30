@@ -73,6 +73,30 @@ function buildLocalFilePaths(fileEntry = {}, publicDirectory) {
   );
 }
 
+function buildLocalFilePathMap(fileEntry = {}, publicDirectory) {
+  const entries = new Map();
+  const originalPath = toLocalPublicFilePath(publicDirectory, fileEntry?.url);
+
+  if (originalPath) {
+    entries.set('original', originalPath);
+  }
+
+  const formats = fileEntry?.formats && typeof fileEntry.formats === 'object' ? fileEntry.formats : {};
+
+  for (const [variantKey, variant] of Object.entries(formats)) {
+    const normalizedKey = String(variantKey || '').trim();
+    const variantPath = toLocalPublicFilePath(publicDirectory, variant?.url);
+
+    if (!normalizedKey || !variantPath) {
+      continue;
+    }
+
+    entries.set(normalizedKey, variantPath);
+  }
+
+  return entries;
+}
+
 function isUploadFilePayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return false;
@@ -279,6 +303,31 @@ module.exports = ({ strapi }) => {
       String(entry.filename || '').trim(),
       settings
     );
+  }
+
+  async function fetchRemoteAsset(url) {
+    try {
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        return {
+          success: false,
+          message: `Could not fetch ${url}.`,
+        };
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+
+      return {
+        success: true,
+        body: Buffer.from(arrayBuffer),
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: error.message || `Could not fetch ${url}.`,
+      };
+    }
   }
 
   function rewriteFilePayload(file, state) {
@@ -503,6 +552,110 @@ module.exports = ({ strapi }) => {
       return {
         success: true,
         deletedFiles,
+      };
+    },
+
+    async restoreLocalMediaFile(fileId, options = {}) {
+      const normalizedFileId = normalizeFileId(fileId);
+
+      if (!normalizedFileId) {
+        return {
+          success: false,
+          message: 'Missing media file ID.',
+          restoredFiles: 0,
+        };
+      }
+
+      const settings =
+        options.settings && typeof options.settings === 'object'
+          ? options.settings
+          : await plugin(strapi).service('cdn-connector-settings').getResolved();
+      const repositoryEntry =
+        options.repositoryEntry && typeof options.repositoryEntry === 'object'
+          ? options.repositoryEntry
+          : await plugin(strapi).service('cdn-connector-repository').get(normalizedFileId);
+
+      if (!repositoryEntry || String(repositoryEntry.syncStatus || '').trim() !== 'uploaded') {
+        return {
+          success: true,
+          skipped: true,
+          restoredFiles: 0,
+        };
+      }
+
+      const fileEntry = await strapi.db.query('plugin::upload.file').findOne({
+        where: {
+          id: /^\d+$/.test(normalizedFileId) ? Number(normalizedFileId) : normalizedFileId,
+        },
+      });
+
+      if (!fileEntry) {
+        return {
+          success: false,
+          message: 'Media file does not exist in Strapi anymore.',
+          restoredFiles: 0,
+        };
+      }
+
+      const provider = String(fileEntry?.provider || 'local').trim().toLowerCase();
+      if (provider && provider !== 'local') {
+        return {
+          success: true,
+          skipped: true,
+          restoredFiles: 0,
+        };
+      }
+
+      const publicDirectory = resolvePublicDirectory(strapi);
+      const localPathMap = buildLocalFilePathMap(fileEntry, publicDirectory);
+      const syncedEntries = collectSyncedEntries(repositoryEntry);
+      const restorableTargets = syncedEntries
+        .map((entry) => ({
+          key: String(entry?.key || '').trim() || 'original',
+          localPath: localPathMap.get(String(entry?.key || '').trim() || 'original') || '',
+          remoteUrl: buildPublicUrlForSyncedEntry(entry, settings),
+        }))
+        .filter((entry) => entry.localPath && entry.remoteUrl);
+
+      if (restorableTargets.length === 0) {
+        return {
+          success: false,
+          message: 'Could not map synced CDN assets back to local upload paths.',
+          restoredFiles: 0,
+        };
+      }
+
+      let restoredFiles = 0;
+      const failures = [];
+
+      for (const target of restorableTargets) {
+        const fetched = await fetchRemoteAsset(target.remoteUrl);
+
+        if (!fetched.success) {
+          failures.push(fetched.message || `Could not fetch ${target.remoteUrl}.`);
+          continue;
+        }
+
+        try {
+          await fs.mkdir(path.dirname(target.localPath), { recursive: true });
+          await fs.writeFile(target.localPath, fetched.body);
+          restoredFiles += 1;
+        } catch (error) {
+          failures.push(error.message || `Could not write ${target.localPath}.`);
+        }
+      }
+
+      if (failures.length > 0) {
+        return {
+          success: false,
+          message: failures[0] || 'Could not restore local media files from Smooth CDN.',
+          restoredFiles,
+        };
+      }
+
+      return {
+        success: true,
+        restoredFiles,
       };
     },
   };

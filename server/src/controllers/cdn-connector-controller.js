@@ -53,8 +53,7 @@ module.exports = ({ strapi }) => ({
     const settings = await settingsService.update(payload);
     const enabled = await plugin(strapi).service('module-registry').isEnabled('cdn-connector');
     const shouldResync =
-      previousSettings.protectedAssets !== settings.protectedAssets ||
-      (previousSettings.offloadLocalFiles !== settings.offloadLocalFiles && settings.offloadLocalFiles);
+      previousSettings.offloadLocalFiles !== settings.offloadLocalFiles && settings.offloadLocalFiles;
     let syncResult = null;
 
     offloadService.invalidateCache();
@@ -96,6 +95,7 @@ module.exports = ({ strapi }) => ({
     const result = await plugin(strapi).service('cdn-connector-sync').startSyncJob(fileIds, {
       trigger: 'manual',
       force: Boolean(ctx.request.body?.force),
+      markSyncable: true,
     });
 
     ctx.body = {
@@ -118,15 +118,46 @@ module.exports = ({ strapi }) => ({
       : ctx.request.body?.fileId
         ? [ctx.request.body.fileId]
         : [];
-    const result = await plugin(strapi).service('cdn-connector-sync').unsyncMediaItems(fileIds);
+    const result = await plugin(strapi).service('cdn-connector-sync').startUnsyncJob(fileIds, {
+      trigger: 'unsync',
+    });
 
     ctx.body = {
       data: {
         result,
+        job: result.job || null,
         mediaItems: await plugin(strapi).service('cdn-connector-sync').listMediaItems(),
       },
     };
-    ctx.status = result.success ? 200 : 400;
+    ctx.status = result.success ? 202 : result.busy ? 409 : 400;
+  },
+
+  async setProtection(ctx) {
+    if (!(await ensureEnabled(strapi, ctx))) {
+      return;
+    }
+
+    const fileIds = Array.isArray(ctx.request.body?.fileIds)
+      ? ctx.request.body.fileIds
+      : ctx.request.body?.fileId
+        ? [ctx.request.body.fileId]
+        : [];
+    const protectedValue = Boolean(ctx.request.body?.protected);
+    const result = await plugin(strapi).service('cdn-connector-sync').startSyncJob(fileIds, {
+      trigger: protectedValue ? 'protect' : 'unprotect',
+      force: true,
+      markSyncable: true,
+      protectedOverride: protectedValue,
+    });
+
+    ctx.body = {
+      data: {
+        result,
+        job: result.job || null,
+        mediaItems: await plugin(strapi).service('cdn-connector-sync').listMediaItems(),
+      },
+    };
+    ctx.status = result.success ? 202 : result.busy ? 409 : 400;
   },
 
   async syncStatus(ctx) {

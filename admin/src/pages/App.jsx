@@ -45,7 +45,6 @@ function defaultApiAcceleratorSettings() {
 
 function defaultCdnConnectorSettings() {
   return {
-    protectedAssets: false,
     offloadLocalFiles: false,
     autoSyncFrequency: 'hourly',
     syncAllFormats: true,
@@ -194,7 +193,6 @@ function normalizeApiAcceleratorSyncJob(job = {}) {
 
 function normalizeCdnConnectorForSubmit(settings) {
   return {
-    protectedAssets: Boolean(settings.protectedAssets),
     offloadLocalFiles: Boolean(settings.offloadLocalFiles),
     autoSyncFrequency: String(settings.autoSyncFrequency || 'hourly'),
     syncAllFormats: Boolean(settings.syncAllFormats),
@@ -231,7 +229,6 @@ function normalizeCdnConnectorSettings(settings = {}) {
 
   return {
     ...defaults,
-    protectedAssets: Boolean(settings.protectedAssets),
     offloadLocalFiles: Object.prototype.hasOwnProperty.call(settings, 'offloadLocalFiles')
       ? Boolean(settings.offloadLocalFiles)
       : defaults.offloadLocalFiles,
@@ -251,6 +248,8 @@ function normalizeCdnConnectorMediaItem(item = {}) {
   return {
     id: String(item.id || `media:${item.fileId || ''}`).trim(),
     fileId: String(item.fileId || '').trim(),
+    syncable: Boolean(item.syncable),
+    protected: Boolean(item.protected),
     name: String(item.name || '').trim(),
     alternativeText: String(item.alternativeText || '').trim(),
     mime: String(item.mime || '').trim(),
@@ -556,6 +555,7 @@ function matchesMediaSearch(item, searchTerm) {
     item?.mime,
     item?.ext,
     item?.syncStatus,
+    item?.syncable ? 'selected' : 'not selected',
     toSearchableErrorText(item?.lastError),
     item?.fileId,
     ...(Array.isArray(item?.syncedEntries)
@@ -809,8 +809,12 @@ function formatEndpointSyncStatus(value) {
   }
 }
 
-function formatMediaSyncStatus(value) {
-  const normalized = String(value || '').trim();
+function formatMediaSyncStatus(item = {}) {
+  if (!item?.syncable) {
+    return 'not selected';
+  }
+
+  const normalized = String(item?.syncStatus || '').trim();
 
   switch (normalized) {
     case 'uploaded':
@@ -818,10 +822,40 @@ function formatMediaSyncStatus(value) {
     case 'upload_failed':
       return 'failed';
     case 'not_synced':
-      return 'not synced';
+      return 'selected';
     default:
-      return normalized || 'unknown';
+      return normalized || 'selected';
   }
+}
+
+function getCdnConnectorJobCopy(job = {}) {
+  const trigger = String(job?.trigger || '').trim();
+
+  if (trigger === 'unsync') {
+    return {
+      title: 'Unsync in progress',
+      preparing: 'Preparing media items for unsync',
+    };
+  }
+
+  if (trigger === 'protect') {
+    return {
+      title: 'Protect in progress',
+      preparing: 'Preparing media items for protection',
+    };
+  }
+
+  if (trigger === 'unprotect') {
+    return {
+      title: 'Unprotect in progress',
+      preparing: 'Preparing media items for unprotection',
+    };
+  }
+
+  return {
+    title: 'Sync in progress',
+    preparing: 'Preparing media items for upload',
+  };
 }
 
 function TablePagination({ itemLabel, totalItems, currentPage, totalPages, startIndex, endIndex, onPageChange }) {
@@ -1405,9 +1439,13 @@ function MediaTableCard({
   selectedFileIds,
   onToggleFile,
   onToggleAllFiles,
+  onBulkSyncAll,
+  onBulkSyncSelected,
   onBulkUnsync,
   onSyncOne,
   onUnsyncOne,
+  onProtectOne,
+  onUnprotectOne,
   onCopyUrl,
   copiedKey,
   expandedItemIds,
@@ -1434,20 +1472,26 @@ function MediaTableCard({
               onChange={(event) => onSearchChange(event.target.value)}
             />
           </Box>
-          <Button
-            variant="secondary"
-            onClick={onBulkUnsync}
-            disabled={isBusy || isOffloadEnabled || selectedFileIds.length === 0}
-          >
-            Unsync selected
-          </Button>
+          <Flex gap={2} wrap="wrap">
+            <Button onClick={onBulkSyncAll} disabled={isBusy || !hasAnyItems}>
+              Sync all
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={onBulkSyncSelected}
+              disabled={isBusy || selectedFileIds.length === 0}
+            >
+              Sync selected
+            </Button>
+            <Button
+              variant="danger-light"
+              onClick={onBulkUnsync}
+              disabled={isBusy || selectedFileIds.length === 0}
+            >
+              Unsync selected
+            </Button>
+          </Flex>
         </Flex>
-
-        {isOffloadEnabled ? (
-          <Typography variant="pi" textColor="neutral600">
-            Unsync is disabled while offload mode is enabled, because local files are removed after sync.
-          </Typography>
-        ) : null}
 
         {!hasSearchResults ? (
           <Typography variant="pi" textColor="neutral600">
@@ -1473,13 +1517,13 @@ function MediaTableCard({
                     </Flex>
                   </Th>
                   <Th>
-                    <Typography variant="sigma" textColor="neutral600">
-                      Type
-                    </Typography>
+                      <Typography variant="sigma" textColor="neutral600">
+                        MIME
+                      </Typography>
                   </Th>
                   <Th>
                     <Typography variant="sigma" textColor="neutral600">
-                      Sync
+                      Status sync
                     </Typography>
                   </Th>
                   <Th>
@@ -1500,8 +1544,16 @@ function MediaTableCard({
                   const variantEntries = Array.isArray(item.syncedEntries)
                     ? item.syncedEntries.filter((entry) => String(entry?.key || '').trim() !== 'original')
                     : [];
+                  const visibleVariantEntries = variantEntries.filter((entry) => entry.publicUrl);
                   const expanded = expandedItemIds.includes(item.fileId);
                   const itemErrorLines = normalizeErrorLines(item.lastError);
+                  const canSync = !isBusy && Boolean(item.fileId) && String(item.syncStatus || '').trim() !== 'uploaded';
+                  const canUnsync = !isBusy && Boolean(item.fileId) && Boolean(item.syncable);
+                  const canProtect = !isBusy && Boolean(item.fileId) && String(item.syncStatus || '').trim() === 'uploaded' && !item.protected;
+                  const canUnprotect = !isBusy && Boolean(item.fileId) && String(item.syncStatus || '').trim() === 'uploaded' && item.protected;
+                  const canOpenOriginal = Boolean(originalEntry?.publicUrl);
+                  const visiblePublicVariantEntries = visibleVariantEntries;
+                  const canToggleExpanded = !isBusy && visiblePublicVariantEntries.length > 0;
 
                   return (
                     <Tr key={item.id || item.fileId}>
@@ -1517,18 +1569,11 @@ function MediaTableCard({
                             />
                             <Typography textColor="neutral800">{item.name || `Media #${item.fileId}`}</Typography>
                           </Flex>
-                          <Typography variant="pi" textColor="neutral600">
-                            {item.fileId ? `File ID: ${item.fileId}` : 'File ID not available'}
-                          </Typography>
                           {item.alternativeText ? (
                             <Typography variant="pi" textColor="neutral600">
                               {item.alternativeText}
                             </Typography>
                           ) : null}
-                          <Typography variant="pi" textColor="neutral600">
-                            {formatBytes(item.size)}
-                            {item.width > 0 && item.height > 0 ? ` - ${item.width}x${item.height}` : ''}
-                          </Typography>
                         </Flex>
                       </Td>
                     <Td>
@@ -1543,12 +1588,7 @@ function MediaTableCard({
                     </Td>
                       <Td>
                         <Flex direction="column" gap={1} alignItems="stretch">
-                          <Typography textColor="neutral800">{formatMediaSyncStatus(item.syncStatus)}</Typography>
-                          {item.lastSyncedAt ? (
-                            <Typography variant="pi" textColor="neutral600">
-                              Last sync: {formatDateTime(item.lastSyncedAt)}
-                            </Typography>
-                          ) : null}
+                          <Typography textColor="neutral800">{formatMediaSyncStatus(item)}</Typography>
                           {itemErrorLines.length > 0 ? (
                             <Typography
                               variant="pi"
@@ -1568,51 +1608,72 @@ function MediaTableCard({
                       </Td>
                       <Td>
                         <Flex direction="column" alignItems="flex-end" gap={2}>
-                          <Button
-                            size="S"
-                            variant="secondary"
-                            onClick={() => onSyncOne(item.fileId)}
-                            disabled={isBusy || !item.fileId}
-                          >
-                            Sync
-                          </Button>
-                          <Button
-                            size="S"
-                            variant="danger-light"
-                            onClick={() => onUnsyncOne(item.fileId)}
-                            disabled={isBusy || isOffloadEnabled || !item.fileId || item.syncedEntries.length === 0}
-                          >
-                            Unsync
-                          </Button>
-                          <Flex gap={1} justifyContent="flex-end" wrap="nowrap">
-                            <MiniActionButton
-                              type="button"
-                              onClick={() => window.open(originalEntry?.publicUrl, '_blank', 'noopener,noreferrer')}
-                              disabled={!originalEntry?.publicUrl}
+                          {canSync ? (
+                            <Button
+                              size="S"
+                              variant="secondary"
+                              onClick={() => onSyncOne(item.fileId)}
                             >
-                              Open
-                            </MiniActionButton>
-                            <MiniActionButton
-                              type="button"
-                              onClick={() => onCopyUrl(originalEntry?.publicUrl, `cdn:${item.fileId}:original`)}
-                              disabled={!originalEntry?.publicUrl}
+                              Sync
+                            </Button>
+                          ) : null}
+                          {canUnsync ? (
+                            <Button
+                              size="S"
+                              variant="danger-light"
+                              onClick={() => onUnsyncOne(item.fileId)}
                             >
-                              {copiedKey === `cdn:${item.fileId}:original` ? 'Copied' : 'Copy'}
-                            </MiniActionButton>
-                          </Flex>
-                          {variantEntries.length > 0 ? (
-                            <>
-                              <Button
-                                size="S"
-                                variant="tertiary"
-                                onClick={() => onToggleExpanded(item.fileId)}
-                                disabled={isBusy}
+                              Unsync
+                            </Button>
+                          ) : null}
+                          {canProtect ? (
+                            <Button
+                              size="S"
+                              variant="secondary"
+                              onClick={() => onProtectOne(item.fileId)}
+                            >
+                              Protect
+                            </Button>
+                          ) : null}
+                          {canUnprotect ? (
+                            <Button
+                              size="S"
+                              variant="secondary"
+                              onClick={() => onUnprotectOne(item.fileId)}
+                            >
+                              Unprotect
+                            </Button>
+                          ) : null}
+                          {canOpenOriginal ? (
+                            <Flex gap={1} justifyContent="flex-end" wrap="nowrap">
+                              <MiniActionButton
+                                type="button"
+                                onClick={() => window.open(originalEntry.publicUrl, '_blank', 'noopener,noreferrer')}
                               >
-                                {variantEntries.length} synced entr{variantEntries.length === 1 ? 'y' : 'ies'}
-                              </Button>
+                                Open
+                              </MiniActionButton>
+                              <MiniActionButton
+                                type="button"
+                                onClick={() => onCopyUrl(originalEntry.publicUrl, `cdn:${item.fileId}:original`)}
+                              >
+                                {copiedKey === `cdn:${item.fileId}:original` ? 'Copied' : 'Copy'}
+                              </MiniActionButton>
+                            </Flex>
+                          ) : null}
+                          {visiblePublicVariantEntries.length > 0 ? (
+                            <>
+                              {canToggleExpanded ? (
+                                <Button
+                                  size="S"
+                                  variant="tertiary"
+                                  onClick={() => onToggleExpanded(item.fileId)}
+                                >
+                                  {visiblePublicVariantEntries.length} synced entr{visiblePublicVariantEntries.length === 1 ? 'y' : 'ies'}
+                                </Button>
+                              ) : null}
                               {expanded ? (
                                 <CompactActionList>
-                                  {variantEntries.map((entry) => (
+                                  {visiblePublicVariantEntries.map((entry) => (
                                     <CompactActionRow key={`${item.fileId}:${entry.path}:${entry.filename}`}>
                                       <Flex direction="column" gap={1} alignItems="stretch">
                                         <CompactActionText variant="pi" textColor="neutral800">
@@ -1628,7 +1689,6 @@ function MediaTableCard({
                                         <MiniActionButton
                                           type="button"
                                           onClick={() => window.open(entry.publicUrl, '_blank', 'noopener,noreferrer')}
-                                          disabled={!entry.publicUrl}
                                         >
                                           Open
                                         </MiniActionButton>
@@ -1640,7 +1700,6 @@ function MediaTableCard({
                                               `cdn:${item.fileId}:${entry.key || entry.path}:${entry.filename}`
                                             )
                                           }
-                                          disabled={!entry.publicUrl}
                                         >
                                           {copiedKey === `cdn:${item.fileId}:${entry.key || entry.path}:${entry.filename}`
                                             ? 'Copied'
@@ -1743,6 +1802,7 @@ export default function App() {
     cdnConnectorSyncJob.totalItems > 0
       ? Math.round((cdnConnectorSyncJob.processedItems / cdnConnectorSyncJob.totalItems) * 100)
       : 0;
+  const cdnConnectorJobCopy = getCdnConnectorJobCopy(cdnConnectorSyncJob);
 
   React.useEffect(() => {
     if (syncedEndpointPage !== syncedEndpointPageData.currentPage) {
@@ -2683,6 +2743,42 @@ export default function App() {
     }
   }
 
+  async function syncSelectedMediaItems() {
+    const fileIds = normalizeStringList(selectedCdnConnectorFileIds);
+    if (fileIds.length === 0) {
+      return;
+    }
+
+    setMessage(null);
+
+    try {
+      const response = await client.post(`/${pluginId}/modules/cdn-connector/sync`, {
+        fileIds,
+        force: true,
+      });
+      const nextJob = normalizeCdnConnectorSyncJob(response.data?.data?.job || {});
+
+      setCdnConnectorSyncJob(nextJob);
+
+      if (nextJob.status === 'running') {
+        startCdnSyncPolling();
+      }
+    } catch (error) {
+      const nextJob = normalizeCdnConnectorSyncJob(error?.response?.data?.data?.job || {});
+
+      if (nextJob.status === 'running') {
+        setCdnConnectorSyncJob(nextJob);
+        startCdnSyncPolling();
+        return;
+      }
+
+      setMessage({
+        type: 'danger',
+        text: extractErrorMessage(error, 'Could not start the media sync process.'),
+      });
+    }
+  }
+
   async function unsyncSingleMediaItem(fileId) {
     if (!fileId) {
       return;
@@ -2704,6 +2800,52 @@ export default function App() {
       },
       'Media item removed from Smooth CDN.'
     );
+  }
+
+  async function setMediaProtection(fileId, protectedValue) {
+    if (!fileId) {
+      return;
+    }
+
+    setMessage(null);
+
+    try {
+      const response = await client.post(`/${pluginId}/modules/cdn-connector/protection`, {
+        fileId,
+        protected: protectedValue,
+      });
+      const nextJob = normalizeCdnConnectorSyncJob(response.data?.data?.job || {});
+
+      setCdnConnectorSyncJob(nextJob);
+
+      if (nextJob.status === 'running') {
+        startCdnSyncPolling();
+      }
+    } catch (error) {
+      const nextJob = normalizeCdnConnectorSyncJob(error?.response?.data?.data?.job || {});
+
+      if (nextJob.status === 'running') {
+        setCdnConnectorSyncJob(nextJob);
+        startCdnSyncPolling();
+        return;
+      }
+
+      setMessage({
+        type: 'danger',
+        text: extractErrorMessage(
+          error,
+          protectedValue ? 'Could not protect the media item.' : 'Could not unprotect the media item.'
+        ),
+      });
+    }
+  }
+
+  async function protectSingleMediaItem(fileId) {
+    await setMediaProtection(fileId, true);
+  }
+
+  async function unprotectSingleMediaItem(fileId) {
+    await setMediaProtection(fileId, false);
   }
 
   async function discoverEndpoints() {
@@ -3576,23 +3718,12 @@ export default function App() {
                   onChange={(event) => updateCdnConnectorField('customSubdomain', event.target.value)}
                 />
 
-                {/*<SelectField*/}
-                {/*  label="Offload local files"*/}
-                {/*  hint="After each successful sync, remove local files from Strapi storage and serve synced assets from Smooth CDN URLs."*/}
-                {/*  value={cdnConnectorSettings.offloadLocalFiles ? 'enabled' : 'disabled'}*/}
-                {/*  disabled={isCdnConnectorBusy}*/}
-                {/*  onChange={(value) => updateCdnConnectorField('offloadLocalFiles', value === 'enabled')}*/}
-                {/*>*/}
-                {/*  <SingleSelectOption value="enabled">Enabled</SingleSelectOption>*/}
-                {/*  <SingleSelectOption value="disabled">Disabled</SingleSelectOption>*/}
-                {/*</SelectField>*/}
-
                 <SelectField
-                  label="Protected assets"
-                  hint="Upload media files as protected assets in Smooth CDN."
-                  value={cdnConnectorSettings.protectedAssets ? 'enabled' : 'disabled'}
+                  label="Offload local files"
+                  hint="After each successful sync, remove local files from Strapi storage and serve synced assets from Smooth CDN URLs."
+                  value={cdnConnectorSettings.offloadLocalFiles ? 'enabled' : 'disabled'}
                   disabled={isCdnConnectorBusy}
-                  onChange={(value) => updateCdnConnectorField('protectedAssets', value === 'enabled')}
+                  onChange={(value) => updateCdnConnectorField('offloadLocalFiles', value === 'enabled')}
                 >
                   <SingleSelectOption value="disabled">Disabled</SingleSelectOption>
                   <SingleSelectOption value="enabled">Enabled</SingleSelectOption>
@@ -3638,9 +3769,13 @@ export default function App() {
             selectedFileIds={selectedCdnConnectorFileIds}
             onToggleFile={toggleSelectedMediaFiles}
             onToggleAllFiles={toggleAllSelectedMediaFiles}
+            onBulkSyncAll={syncAllMediaItems}
+            onBulkSyncSelected={syncSelectedMediaItems}
             onBulkUnsync={unsyncSelectedMediaItems}
             onSyncOne={syncSingleMediaItem}
             onUnsyncOne={unsyncSingleMediaItem}
+            onProtectOne={protectSingleMediaItem}
+            onUnprotectOne={unprotectSingleMediaItem}
             onCopyUrl={copyVariantUrl}
             copiedKey={copiedKey}
             expandedItemIds={expandedCdnConnectorItemIds}
@@ -3912,12 +4047,12 @@ export default function App() {
                   <Flex justifyContent="space-between" gap={3} wrap="wrap">
                     <Box>
                       <Typography variant="epsilon" tag="h3">
-                        Sync in progress
+                        {cdnConnectorJobCopy.title}
                       </Typography>
                       <Typography variant="pi" textColor="neutral600">
                         {cdnConnectorSyncJob.totalItems > 0
                           ? `${cdnConnectorSyncJob.processedItems} of ${cdnConnectorSyncJob.totalItems} media items processed`
-                          : 'Preparing media items for upload'}
+                          : cdnConnectorJobCopy.preparing}
                       </Typography>
                     </Box>
                     <Typography variant="pi" textColor="neutral600">

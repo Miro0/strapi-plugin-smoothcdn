@@ -63,8 +63,24 @@ function normalizeTimestamp(value) {
 }
 
 function normalizeFocusAxis(value) {
-  const normalized = parseInt(value, 10);
-  return Number.isFinite(normalized) ? normalized : null;
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) {
+    return null;
+  }
+
+  const normalized = Number.parseFloat(raw.replace('%', ''));
+  if (!Number.isFinite(normalized)) {
+    return null;
+  }
+
+  const usesPercentSyntax = raw.includes('%');
+  const percentValue = !usesPercentSyntax && normalized >= 0 && normalized <= 1 ? normalized * 100 : normalized;
+
+  return Math.round(Math.max(0, Math.min(100, percentValue)));
 }
 
 function normalizeFocusPoint(value) {
@@ -89,6 +105,10 @@ function normalizeFocusPoint(value) {
   const x = normalizeFocusAxis(
     value.x ??
     value.left ??
+    value.leftPercent ??
+    value.leftPercentage ??
+    value.percentX ??
+    value.percentageX ??
     value.focusX ??
     value.focus_x ??
     value.cx
@@ -96,6 +116,10 @@ function normalizeFocusPoint(value) {
   const y = normalizeFocusAxis(
     value.y ??
     value.top ??
+    value.topPercent ??
+    value.topPercentage ??
+    value.percentY ??
+    value.percentageY ??
     value.focusY ??
     value.focus_y ??
     value.cy
@@ -290,6 +314,10 @@ function findSyncedEntryByKey(currentEntry = {}, key = '') {
   return null;
 }
 
+function isSyncableEntry(entry = {}) {
+  return Boolean(entry?.syncable);
+}
+
 module.exports = ({ strapi }) => {
   let schedulerHandle = null;
   let activeSyncPromise = null;
@@ -335,6 +363,34 @@ module.exports = ({ strapi }) => {
     });
 
     return state.syncJob || null;
+  }
+
+  async function reconcileStaleSyncState() {
+    const runtimeState = plugin(strapi).service('cdn-connector-runtime-state');
+    const state = await runtimeState.get();
+    const currentJob = state.syncJob || null;
+
+    if (currentJob?.status !== 'running' || activeSyncPromise) {
+      return {
+        state,
+        staleCleared: false,
+      };
+    }
+
+    const nextState = await runtimeState.update((current) => ({
+      syncJob: {
+        ...(current.syncJob || currentJob),
+        status: 'failed',
+        finishedAt: nowIso(),
+        currentItem: '',
+        errorMessage: 'Previous sync timed out or was interrupted.',
+      },
+    }));
+
+    return {
+      state: nextState,
+      staleCleared: true,
+    };
   }
 
   async function isModuleEnabled() {
@@ -542,6 +598,8 @@ module.exports = ({ strapi }) => {
       return {
         id: item.id,
         fileId: item.fileId,
+        syncable: Boolean(stored?.syncable),
+        protected: Boolean(stored?.protected),
         name: item.name,
         alternativeText: item.alternativeText,
         mime: item.mime,
@@ -629,13 +687,47 @@ module.exports = ({ strapi }) => {
     );
     const filterSet = normalizedIds.length > 0 ? new Set(normalizedIds) : null;
     const sourceItems = await listSourceMediaItems(filterSet);
+    const storedEntries = await repository.all();
+    const storedById = new Map(storedEntries.map((entry) => [entry.fileId, entry]));
+    const markSyncable = Boolean(options.markSyncable);
+    const hasProtectedOverride = Object.prototype.hasOwnProperty.call(options, 'protectedOverride');
 
     if (normalizedIds.length === 0) {
       await reconcileRemovedItems(sourceItems);
     }
 
+    if (markSyncable) {
+      const targetIds = normalizedIds.length > 0 ? normalizedIds : sourceItems.map((item) => item.fileId).filter(Boolean);
+
+      if (targetIds.length > 0) {
+        await repository.upsertMany(
+          targetIds.map((fileId) => ({
+            fileId,
+            syncable: true,
+          }))
+        );
+
+        for (const fileId of targetIds) {
+      const current = storedById.get(fileId) || { fileId };
+      storedById.set(fileId, {
+        ...current,
+        syncable: true,
+        protected: hasProtectedOverride ? Boolean(options.protectedOverride) : Boolean(current.protected),
+      });
+    }
+      }
+    }
+
+    const sourceCandidates = sourceItems.filter((item) => {
+      if (markSyncable) {
+        return true;
+      }
+
+      return isSyncableEntry(storedById.get(item.fileId));
+    });
+
     await updateSyncJob(jobId, {
-      totalItems: sourceItems.length,
+      totalItems: sourceCandidates.length,
       processedItems: 0,
       syncedItems: 0,
       failedItems: 0,
@@ -645,7 +737,7 @@ module.exports = ({ strapi }) => {
       failedEntries: [],
     });
 
-    if (sourceItems.length === 0) {
+    if (sourceCandidates.length === 0) {
       if (options.trigger === 'scheduled') {
         await settingsService.touch('lastAutoSyncAt');
         await settingsService.touch('lastSyncAt');
@@ -688,6 +780,8 @@ module.exports = ({ strapi }) => {
 
       await repository.upsert({
         fileId: item.fileId,
+        syncable: true,
+        protected: hasProtectedOverride ? Boolean(options.protectedOverride) : Boolean(storedById.get(item.fileId)?.protected),
         syncStatus: 'upload_failed',
         lastError: failureMessage,
       });
@@ -729,6 +823,8 @@ module.exports = ({ strapi }) => {
 
       await repository.upsert({
         fileId: batchEntry.item.fileId,
+        syncable: true,
+        protected: Boolean(batchEntry.protected),
         syncStatus: 'uploaded',
         lastSyncedAt: nowIso(),
         lastSourceSignature: batchEntry.syncSignature,
@@ -788,16 +884,17 @@ module.exports = ({ strapi }) => {
       }
     };
 
-    for (const item of sourceItems) {
+    for (const item of sourceCandidates) {
       await updateSyncJob(jobId, {
         currentItem: item.name || item.fileId,
       });
 
-      const current = await repository.get(item.fileId);
+      const current = storedById.get(item.fileId) || null;
+      const targetProtected = hasProtectedOverride ? Boolean(options.protectedOverride) : Boolean(current?.protected);
       const syncPlan = buildSyncPlan(item, settings);
       const syncSignature = JSON.stringify({
         source: item.sourceSignature,
-        protectedAssets: Boolean(settings.protectedAssets),
+        protectedAssets: targetProtected,
         syncAllFormats: Boolean(settings.syncAllFormats),
         entries: syncPlan.map((entry) => `${entry.key}:${entry.filename}:${JSON.stringify(entry.meta || {})}`),
       });
@@ -856,7 +953,7 @@ module.exports = ({ strapi }) => {
             filename: plannedEntry.filename,
           },
           filename: plannedEntry.filename,
-          protected: Boolean(settings.protectedAssets),
+          protected: targetProtected,
           meta: plannedEntry.meta || null,
           body: fetched.body,
           contentType: plannedEntry.mime || fetched.contentType || 'application/octet-stream',
@@ -871,6 +968,7 @@ module.exports = ({ strapi }) => {
       pendingBatch.push({
         item,
         current,
+        protected: targetProtected,
         syncPlan,
         syncSignature,
         uploadAssets,
@@ -968,7 +1066,7 @@ module.exports = ({ strapi }) => {
       };
     },
 
-    async unsyncMediaItems(fileIds = []) {
+    async unsyncMediaItems(fileIds = [], options = {}) {
       if (!(await isModuleEnabled())) {
         return {
           success: false,
@@ -980,19 +1078,107 @@ module.exports = ({ strapi }) => {
       const normalizedIds = Array.from(
         new Set((Array.isArray(fileIds) ? fileIds : [fileIds]).map(normalizeMediaId).filter(Boolean))
       );
+      const settings = await plugin(strapi).service('cdn-connector-settings').getResolved();
+      const repository = plugin(strapi).service('cdn-connector-repository');
+      const offloadService = plugin(strapi).service('cdn-connector-offload');
+      const syncJobId = String(options.syncJobId || '').trim();
+      const requestedEntries = normalizedIds.length > 0
+        ? await Promise.all(normalizedIds.map((fileId) => repository.get(fileId)))
+        : await repository.all();
+      const entries = requestedEntries.filter((entry) => entry && isSyncableEntry(entry));
+      const uploadedEntries = entries.filter((entry) => String(entry.syncStatus || '').trim() === 'uploaded');
 
-      if (normalizedIds.length === 0) {
+      if (entries.length === 0) {
         return {
-          success: false,
-          message: 'Provide at least one media file ID.',
+          success: true,
+          message: 'No selected media items to unsync.',
           unsynced: 0,
         };
       }
 
-      const repository = plugin(strapi).service('cdn-connector-repository');
-      const offloadService = plugin(strapi).service('cdn-connector-offload');
-      const entries = await Promise.all(normalizedIds.map((fileId) => repository.get(fileId)));
-      const targets = entries.flatMap((entry) =>
+      if (syncJobId) {
+        await updateSyncJob(syncJobId, {
+          totalItems: entries.length,
+          processedItems: 0,
+          syncedItems: 0,
+          failedItems: 0,
+          skippedItems: 0,
+          currentItem: '',
+          errorMessage: '',
+          failedEntries: [],
+        });
+      }
+
+      const restoreFailures = [];
+      let processedItems = 0;
+
+      const markProcessed = async (entry, failureMessage = '') => {
+        processedItems += 1;
+
+        if (!syncJobId) {
+          return;
+        }
+
+        const patch = {
+          processedItems,
+          currentItem: entry?.fileId || '',
+        };
+
+        if (failureMessage) {
+          patch.failedItems = restoreFailures.length;
+          patch.failedEntries = restoreFailures;
+          patch.errorMessage = failureMessage;
+        }
+
+        await updateSyncJob(syncJobId, patch);
+      };
+
+      for (const entry of uploadedEntries) {
+        if (syncJobId) {
+          await updateSyncJob(syncJobId, {
+            currentItem: entry.fileId,
+          });
+        }
+
+        const restoreResult = await offloadService.restoreLocalMediaFile(entry.fileId, {
+          settings,
+          repositoryEntry: entry,
+        });
+
+        if (!restoreResult.success) {
+          restoreFailures.push({
+            fileId: entry.fileId,
+            message: restoreResult.message || 'Could not restore local media files from Smooth CDN.',
+          });
+          await markProcessed(entry, restoreResult.message || 'Could not restore local media files from Smooth CDN.');
+          continue;
+        }
+
+        await markProcessed(entry);
+      }
+
+      if (restoreFailures.length > 0) {
+        if (syncJobId) {
+          await updateSyncJob(syncJobId, {
+            status: 'failed',
+            finishedAt: nowIso(),
+            currentItem: '',
+            processedItems,
+            failedItems: restoreFailures.length,
+            failedEntries: restoreFailures,
+            errorMessage: restoreFailures[0].message,
+          });
+        }
+
+        return {
+          success: false,
+          message: restoreFailures[0].message,
+          unsynced: 0,
+          failures: restoreFailures,
+        };
+      }
+
+      const targets = uploadedEntries.flatMap((entry) =>
         (Array.isArray(entry?.syncedEntries) ? entry.syncedEntries : [])
           .filter((asset) => asset.filename)
           .map((asset) => ({
@@ -1005,6 +1191,23 @@ module.exports = ({ strapi }) => {
         const deletion = await plugin(strapi).service('smooth-client').deleteAssets(targets, 'cdn-connector');
 
         if (!deletion.success) {
+          if (syncJobId) {
+            await updateSyncJob(syncJobId, {
+              status: 'failed',
+              finishedAt: nowIso(),
+              currentItem: '',
+              processedItems,
+              failedItems: 1,
+              failedEntries: [
+                {
+                  fileId: uploadedEntries[0]?.fileId || '',
+                  message: deletion.message || 'Could not delete synced media assets from Smooth CDN.',
+                },
+              ],
+              errorMessage: deletion.message || 'Could not delete synced media assets from Smooth CDN.',
+            });
+          }
+
           return {
             success: false,
             message: deletion.message || 'Could not delete synced media assets from Smooth CDN.',
@@ -1014,8 +1217,10 @@ module.exports = ({ strapi }) => {
       }
 
       await repository.upsertMany(
-        normalizedIds.map((fileId) => ({
-          fileId,
+        entries.map((entry) => ({
+          fileId: entry.fileId,
+          syncable: false,
+          protected: false,
           syncStatus: 'not_synced',
           lastSyncedAt: '',
           lastSourceSignature: '',
@@ -1025,13 +1230,84 @@ module.exports = ({ strapi }) => {
       );
       offloadService.invalidateCache();
 
+      if (syncJobId) {
+        await updateSyncJob(syncJobId, {
+          status: 'completed',
+          finishedAt: nowIso(),
+          currentItem: '',
+          processedItems: entries.length,
+          syncedItems: entries.length,
+          failedItems: 0,
+          skippedItems: 0,
+          errorMessage: '',
+          failedEntries: [],
+        });
+      }
+
       return {
         success: true,
         message:
-          normalizedIds.length === 1
+          entries.length === 1
             ? 'Media item was removed from Smooth CDN.'
-            : `${normalizedIds.length} media items were removed from Smooth CDN.`,
-        unsynced: normalizedIds.length,
+            : `${entries.length} media items were removed from Smooth CDN.`,
+        unsynced: entries.length,
+      };
+    },
+
+    async startUnsyncJob(fileIds = [], options = {}) {
+      await reconcileStaleSyncState();
+      const runtimeState = plugin(strapi).service('cdn-connector-runtime-state');
+      const currentJob = (await runtimeState.get()).syncJob || defaultSyncJob();
+
+      if (currentJob.status === 'running') {
+        return {
+          success: false,
+          busy: true,
+          message: 'Media sync is already running.',
+          job: currentJob,
+        };
+      }
+
+      const jobId = randomUUID();
+      const initialJob = await updateSyncJob(jobId, {
+        status: 'running',
+        trigger: String(options.trigger || 'unsync').trim(),
+        totalItems: 0,
+        processedItems: 0,
+        syncedItems: 0,
+        failedItems: 0,
+        skippedItems: 0,
+        currentItem: '',
+        startedAt: nowIso(),
+        finishedAt: '',
+        errorMessage: '',
+        failedEntries: [],
+      });
+
+      const jobPromise = this.unsyncMediaItems(fileIds, {
+        ...options,
+        syncJobId: jobId,
+      }).catch(async (error) => {
+        await updateSyncJob(jobId, {
+          status: 'failed',
+          finishedAt: nowIso(),
+          currentItem: '',
+          errorMessage: error.message || 'Media unsync failed.',
+        });
+
+        throw error;
+      }).finally(() => {
+        activeSyncPromise = null;
+      });
+      activeSyncPromise = jobPromise;
+
+      setImmediate(() => {
+        jobPromise.catch(() => null);
+      });
+
+      return {
+        success: true,
+        job: initialJob,
       };
     },
 
@@ -1081,6 +1357,7 @@ module.exports = ({ strapi }) => {
     },
 
     async startSyncJob(mediaIds = [], options = {}) {
+      await reconcileStaleSyncState();
       const runtimeState = plugin(strapi).service('cdn-connector-runtime-state');
       const currentJob = (await runtimeState.get()).syncJob || defaultSyncJob();
 
@@ -1134,11 +1411,12 @@ module.exports = ({ strapi }) => {
     },
 
     async getSyncJobStatus() {
-      const runtimeState = plugin(strapi).service('cdn-connector-runtime-state');
-      return (await runtimeState.get()).syncJob || defaultSyncJob();
+      const result = await reconcileStaleSyncState();
+      return result.state?.syncJob || defaultSyncJob();
     },
 
     async runScheduledSync() {
+      await reconcileStaleSyncState();
       if (!(await isModuleEnabled())) {
         return;
       }

@@ -155,6 +155,14 @@ module.exports = [
     },
   },
   {
+    method: 'POST',
+    path: '/modules/cdn-connector/protection',
+    handler: 'cdnConnector.setProtection',
+    config: {
+      policies: [],
+    },
+  },
+  {
     method: 'GET',
     path: '/modules/cdn-connector/sync/status',
     handler: 'cdnConnector.syncStatus',

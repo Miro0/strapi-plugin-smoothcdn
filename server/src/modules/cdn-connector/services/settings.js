@@ -6,7 +6,6 @@ const pluginId = require('../../../plugin-id');
 module.exports = ({ strapi }) => ({
   defaults() {
     return {
-      protectedAssets: false,
       offloadLocalFiles: false,
       autoSyncFrequency: 'hourly',
       syncAllFormats: true,
@@ -32,7 +31,6 @@ module.exports = ({ strapi }) => ({
     };
 
     return {
-      protectedAssets: Boolean(merged.protectedAssets),
       offloadLocalFiles: Object.prototype.hasOwnProperty.call(merged, 'offloadLocalFiles')
         ? Boolean(merged.offloadLocalFiles)
         : defaults.offloadLocalFiles,

@@ -1,6 +1,6 @@
 {
   "name": "strapi-plugin-smoothcdn",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Boost Strapi performance by connecting media and API assets to Smooth CDN with built-in optimization and scalable delivery pipelines.",
   "keywords": [
     "strapi",

@@ -20,6 +20,37 @@ function normalizeSyncedEntry(entry = {}) {
   };
 }
 
+function deriveProtected(entry = {}, current = {}) {
+  if (Object.prototype.hasOwnProperty.call(entry, 'protected')) {
+    return Boolean(entry.protected);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(current, 'protected')) {
+    return Boolean(current.protected);
+  }
+
+  return false;
+}
+
+function deriveSyncable(entry = {}, current = {}) {
+  if (Object.prototype.hasOwnProperty.call(entry, 'syncable')) {
+    return Boolean(entry.syncable);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(current, 'syncable')) {
+    return Boolean(current.syncable);
+  }
+
+  const syncStatus = String(entry.syncStatus || current.syncStatus || '').trim();
+  const syncedEntries = Array.isArray(entry.syncedEntries)
+    ? entry.syncedEntries
+    : Array.isArray(current.syncedEntries)
+      ? current.syncedEntries
+      : [];
+
+  return syncStatus === 'uploaded' || syncStatus === 'upload_failed' || syncedEntries.length > 0;
+}
+
 module.exports = ({ strapi }) => ({
   store() {
     return strapi.store({
@@ -34,6 +65,8 @@ module.exports = ({ strapi }) => ({
 
     return {
       fileId: String(entry.fileId || current.fileId || '').trim(),
+      syncable: deriveSyncable(entry, current),
+      protected: deriveProtected(entry, current),
       syncStatus: ['not_synced', 'uploaded', 'upload_failed'].includes(String(entry.syncStatus || current.syncStatus || '').trim())
         ? String(entry.syncStatus || current.syncStatus || '').trim()
         : 'not_synced',
