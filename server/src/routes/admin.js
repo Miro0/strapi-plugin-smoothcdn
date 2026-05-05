@@ -163,6 +163,22 @@ module.exports = [
     },
   },
   {
+    method: 'POST',
+    path: '/modules/cdn-connector/accesses/grant',
+    handler: 'cdnConnector.grantAccess',
+    config: {
+      policies: [],
+    },
+  },
+  {
+    method: 'POST',
+    path: '/modules/cdn-connector/accesses/revoke',
+    handler: 'cdnConnector.revokeAccess',
+    config: {
+      policies: [],
+    },
+  },
+  {
     method: 'GET',
     path: '/modules/cdn-connector/sync/status',
     handler: 'cdnConnector.syncStatus',

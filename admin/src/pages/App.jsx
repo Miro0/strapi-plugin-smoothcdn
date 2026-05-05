@@ -285,6 +285,49 @@ function normalizeCdnConnectorMediaItem(item = {}) {
   };
 }
 
+function normalizeCdnConnectorAccess(item = {}) {
+  return {
+    id: String(item.id || item.accessId || item.access_id || item.uuid || '').trim(),
+    email: String(item.email || item.userEmail || item.user_email || item?.user?.email || '').trim() || 'Unknown email',
+    assets: Array.isArray(item.assets)
+      ? item.assets
+          .map((entry) =>
+            typeof entry === 'string'
+              ? entry
+              : String(
+                  entry?.label || entry?.name || entry?.fileName || entry?.file_name || entry?.assetName || entry?.asset_name || entry?.id || ''
+                ).trim()
+          )
+          .filter(Boolean)
+      : [],
+    assetsLabel: String(item.assetsLabel || item.assets_label || '').trim(),
+    expiresAt: String(item.expiresAt || item.expires_at || item.expiration || item.expireAt || item.expire_at || '').trim(),
+    updatedAt: String(item.updatedAt || item.updated_at || '').trim(),
+    createdAt: String(item.createdAt || item.created_at || '').trim(),
+  };
+}
+
+function normalizeCdnConnectorUnusedAsset(item = {}) {
+  return {
+    id: String(item.id || item.assetId || item.asset_id || item.asset || '').trim(),
+    assetId: String(item.assetId || item.asset_id || '').trim(),
+    asset: String(item.asset || item.fileName || item.file_name || item.assetName || item.asset_name || '').trim() || 'Unknown asset',
+    updatedAt: String(item.updatedAt || item.updated_at || item.date || '').trim(),
+    hasUsageRecord: Object.prototype.hasOwnProperty.call(item, 'hasUsageRecord')
+      ? Boolean(item.hasUsageRecord)
+      : Object.prototype.hasOwnProperty.call(item, 'has_usage_record')
+        ? Boolean(item.has_usage_record)
+        : Boolean(String(item.updatedAt || item.updated_at || item.date || '').trim()),
+  };
+}
+
+function normalizeGrantAccessAssetOption(item = {}) {
+  return {
+    value: String(item.value || item.id || '').trim(),
+    label: String(item.label || item.value || item.id || '').trim(),
+  };
+}
+
 function normalizeErrorLines(value) {
   if (Array.isArray(value)) {
     return value.flatMap((entry) => normalizeErrorLines(entry));
@@ -358,6 +401,18 @@ function formatDateTime(value) {
   } catch (error) {
     return value;
   }
+}
+
+function formatOptionalDateTime(value, fallback = '-') {
+  return value ? formatDateTime(value) : fallback;
+}
+
+function formatAccessExpiration(value) {
+  return value ? formatDateTime(value) : '- no expiry';
+}
+
+function formatUnusedAssetLastUsed(item = {}) {
+  return item?.hasUsageRecord ? formatDateTime(item.updatedAt) : 'Never';
 }
 
 function extractErrorMessage(error, fallback = 'Request failed.') {
@@ -575,6 +630,50 @@ function matchesMediaSearch(item, searchTerm) {
 
 function buildMediaDisplayRows(items = [], searchTerm = '') {
   return items.filter((item) => matchesMediaSearch(item, searchTerm));
+}
+
+function buildAccessDisplayRows(items = [], searchTerm = '') {
+  const normalizedSearch = String(searchTerm || '').trim().toLowerCase();
+
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    return [
+      item?.email,
+      item?.assetsLabel,
+      ...(Array.isArray(item?.assets) ? item.assets : []),
+      item?.expiresAt,
+      item?.updatedAt,
+      item?.createdAt,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
+}
+
+function buildUnusedAssetDisplayRows(items = [], searchTerm = '', filter = 'all') {
+  const normalizedSearch = String(searchTerm || '').trim().toLowerCase();
+  const normalizedFilter = filter === 'never' ? 'never' : 'all';
+
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    if (normalizedFilter === 'never' && item?.hasUsageRecord) {
+      return false;
+    }
+
+    if (!normalizedSearch) {
+      return true;
+    }
+
+    return [item?.asset, item?.assetId, item?.updatedAt, item?.hasUsageRecord ? 'used' : 'never']
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
 }
 
 function clampPage(page, totalPages) {
@@ -1036,6 +1135,27 @@ const MiniActionButton = styled.button`
   font-size: 12px;
   line-height: 1;
   padding: 4px 6px;
+`;
+
+const CheckboxList = styled.div`
+  width: 100%;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid ${({ theme }) => theme.colors.neutral200};
+  border-radius: 4px;
+  background: ${({ theme }) => theme.colors.neutral0};
+`;
+
+const CheckboxListItem = styled.label`
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+
+  & + & {
+    border-top: 1px solid ${({ theme }) => theme.colors.neutral150};
+  }
 `;
 
 function SideNavLink({ label, active, disabled = false, onClick, endAction = null }) {
@@ -1735,6 +1855,296 @@ function MediaTableCard({
   );
 }
 
+function AccessesTableCard({
+  totalCount,
+  filteredCount,
+  items,
+  searchValue,
+  onSearchChange,
+  currentPage,
+  totalPages,
+  startIndex,
+  endIndex,
+  onPageChange,
+  onGrantToggle,
+  isGrantFormOpen,
+  grantEmail,
+  onGrantEmailChange,
+  grantAssets,
+  onGrantAssetsChange,
+  grantExpiresAt,
+  onGrantExpiresAtChange,
+  grantAssetOptions,
+  onGrantSubmit,
+  onRevokeOne,
+  isBusy,
+  message = '',
+}) {
+  const hasSearchResults = filteredCount > 0;
+  const hasAnyItems = totalCount > 0;
+  const hasGrantAssetOptions = grantAssetOptions.length > 0;
+  const selectedGrantAssets = new Set(grantAssets);
+
+  return (
+    <SectionCard
+      title="Accesses"
+      subtitle="Project accesses granted for protected CDN assets."
+      actions={
+        <Button onClick={onGrantToggle} disabled={isBusy}>
+          {isGrantFormOpen ? 'Hide form' : 'Grant access'}
+        </Button>
+      }
+    >
+      <Flex direction="column" gap={4} alignItems="stretch">
+        {isGrantFormOpen ? (
+          <Box background="neutral100" hasRadius padding={5}>
+            <Flex direction="column" gap={4} alignItems="stretch">
+              {!hasGrantAssetOptions ? (
+                <Typography variant="pi" textColor="warning600">
+                  You have no protected assets in this project to assign access to
+                </Typography>
+              ) : (
+                <>
+                  <Typography variant="pi" textColor="neutral700">
+                    Grant access to selected protected assets for a specific email address.
+                  </Typography>
+                  <TextField
+                    label="Email"
+                    name="grant-access-email"
+                    type="email"
+                    value={grantEmail}
+                    onChange={(event) => onGrantEmailChange(event.target.value)}
+                  />
+                  <Field.Root hint="Leave this empty to grant access to all protected assets in the project.">
+                    <Field.Label>Assets</Field.Label>
+                    <CheckboxList>
+                      {grantAssetOptions.map((option) => (
+                        <CheckboxListItem key={option.value}>
+                          <input
+                            type="checkbox"
+                            checked={selectedGrantAssets.has(option.value)}
+                            disabled={isBusy}
+                            onChange={(event) => {
+                              const nextAssets = event.target.checked
+                                ? [...grantAssets, option.value]
+                                : grantAssets.filter((value) => value !== option.value);
+
+                              onGrantAssetsChange(nextAssets);
+                            }}
+                          />
+                          <Typography variant="pi" textColor="neutral800">
+                            {option.label}
+                          </Typography>
+                        </CheckboxListItem>
+                      ))}
+                    </CheckboxList>
+                    <Field.Hint />
+                  </Field.Root>
+                  <TextField
+                    label="expiresAt"
+                    hint="Leave empty to grant access without expiration."
+                    name="grant-access-expires-at"
+                    type="datetime-local"
+                    value={grantExpiresAt}
+                    onChange={(event) => onGrantExpiresAtChange(event.target.value)}
+                  />
+                  <Flex justifyContent="flex-end" gap={2}>
+                    <Button variant="secondary" onClick={onGrantToggle} disabled={isBusy}>
+                      Cancel
+                    </Button>
+                    <Button onClick={onGrantSubmit} disabled={isBusy || !hasGrantAssetOptions}>
+                      Grant access
+                    </Button>
+                  </Flex>
+                </>
+              )}
+            </Flex>
+          </Box>
+        ) : null}
+
+        <Box minWidth="280px" width="100%" style={{ maxWidth: '420px' }}>
+          <TextField
+            label="Search accesses"
+            placeholder="Search by email or asset"
+            name="accesses-search"
+            value={searchValue}
+            onChange={(event) => onSearchChange(event.target.value)}
+          />
+        </Box>
+
+        {message ? (
+          <Typography variant="pi" textColor="danger600">
+            {message}
+          </Typography>
+        ) : null}
+
+        {!hasSearchResults ? (
+          <Typography variant="pi" textColor="neutral600">
+            {hasAnyItems ? 'No accesses match this search.' : 'No accesses found.'}
+          </Typography>
+        ) : (
+          <>
+            <Table colCount={6} rowCount={items.length + 1}>
+              <Thead>
+                <Tr>
+                  <Th><Typography variant="sigma" textColor="neutral600">Email</Typography></Th>
+                  <Th><Typography variant="sigma" textColor="neutral600">Assets</Typography></Th>
+                  <Th><Typography variant="sigma" textColor="neutral600">Expiration</Typography></Th>
+                  <Th><Typography variant="sigma" textColor="neutral600">Updated</Typography></Th>
+                  <Th><Typography variant="sigma" textColor="neutral600">Created</Typography></Th>
+                  <Th><Typography variant="sigma" textColor="neutral600">Actions</Typography></Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                {items.map((item) => (
+                  <Tr key={item.id || item.email}>
+                    <Td><Typography textColor="neutral800">{item.email}</Typography></Td>
+                    <Td>
+                      <Flex direction="column" gap={1} alignItems="stretch">
+                        <Typography textColor="neutral800">{item.assetsLabel || 'All protected assets'}</Typography>
+                        {item.assets.length > 1 ? (
+                          <Typography variant="pi" textColor="neutral600">
+                            {item.assets.join(', ')}
+                          </Typography>
+                        ) : null}
+                      </Flex>
+                    </Td>
+                    <Td><Typography textColor="neutral800">{formatAccessExpiration(item.expiresAt)}</Typography></Td>
+                    <Td><Typography textColor="neutral800">{formatOptionalDateTime(item.updatedAt)}</Typography></Td>
+                    <Td><Typography textColor="neutral800">{formatOptionalDateTime(item.createdAt)}</Typography></Td>
+                    <Td>
+                      <Flex justifyContent="flex-end">
+                        <Button
+                          size="S"
+                          variant="danger-light"
+                          onClick={() => onRevokeOne(item.id)}
+                          disabled={isBusy || !item.id}
+                        >
+                          Revoke
+                        </Button>
+                      </Flex>
+                    </Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </Table>
+            <TablePagination
+              itemLabel="accesses"
+              totalItems={filteredCount}
+              currentPage={currentPage}
+              totalPages={totalPages}
+              startIndex={startIndex}
+              endIndex={endIndex}
+              onPageChange={onPageChange}
+            />
+          </>
+        )}
+      </Flex>
+    </SectionCard>
+  );
+}
+
+function UnusedAssetsTableCard({
+  totalCount,
+  filteredCount,
+  items,
+  searchValue,
+  onSearchChange,
+  filterValue,
+  onFilterChange,
+  currentPage,
+  totalPages,
+  startIndex,
+  endIndex,
+  onPageChange,
+  retentionLabel,
+  message = '',
+}) {
+  const hasSearchResults = filteredCount > 0;
+  const hasAnyItems = totalCount > 0;
+
+  return (
+    <SectionCard
+      title="Unused assets"
+      subtitle="Synced CDN assets cross-checked against Smooth CDN usage logs."
+    >
+      <Flex direction="column" gap={4} alignItems="stretch">
+        <Flex justifyContent="space-between" alignItems="flex-end" gap={4} wrap="wrap">
+          <Box minWidth="280px" width="100%" style={{ maxWidth: '420px' }}>
+            <TextField
+              label="Search unused assets"
+              placeholder="Search by asset name"
+              name="unused-assets-search"
+              value={searchValue}
+              onChange={(event) => onSearchChange(event.target.value)}
+            />
+          </Box>
+          <Box minWidth="220px" width="100%" style={{ maxWidth: '280px' }}>
+            <SelectField
+              label="Last used filter"
+              value={filterValue}
+              onChange={onFilterChange}
+            >
+              <SingleSelectOption value="all">Used anytime</SingleSelectOption>
+              <SingleSelectOption value="never">Never used</SingleSelectOption>
+            </SelectField>
+          </Box>
+        </Flex>
+
+        {message ? (
+          <Typography variant="pi" textColor="danger600">
+            {message}
+          </Typography>
+        ) : null}
+
+        {!hasSearchResults ? (
+          <Typography variant="pi" textColor="neutral600">
+            {hasAnyItems
+              ? filterValue === 'never'
+                ? 'No assets match the selected filter.'
+                : 'No assets match this search.'
+              : 'No assets found.'}
+          </Typography>
+        ) : (
+          <>
+            <Table colCount={2} rowCount={items.length + 1}>
+              <Thead>
+                <Tr>
+                  <Th><Typography variant="sigma" textColor="neutral600">Asset</Typography></Th>
+                  <Th><Typography variant="sigma" textColor="neutral600">Last used</Typography></Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                {items.map((item) => (
+                  <Tr key={item.id || item.assetId || item.asset}>
+                    <Td><Typography textColor="neutral800">{item.asset}</Typography></Td>
+                    <Td><Typography textColor="neutral800">{formatUnusedAssetLastUsed(item)}</Typography></Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </Table>
+            <TablePagination
+              itemLabel="assets"
+              totalItems={filteredCount}
+              currentPage={currentPage}
+              totalPages={totalPages}
+              startIndex={startIndex}
+              endIndex={endIndex}
+              onPageChange={onPageChange}
+            />
+          </>
+        )}
+
+        {retentionLabel ? (
+          <Typography variant="pi" textColor="neutral600">
+            Asset usage logs are reset on a rolling basis. Your current plan keeps these logs for {retentionLabel}.
+          </Typography>
+        ) : null}
+      </Flex>
+    </SectionCard>
+  );
+}
+
 export default function App() {
   const client = useFetchClient();
   const [isReady, setIsReady] = React.useState(false);
@@ -1746,14 +2156,29 @@ export default function App() {
   const [apiAcceleratorSyncJob, setApiAcceleratorSyncJob] = React.useState(defaultApiAcceleratorSyncJob());
   const [cdnConnectorSettings, setCdnConnectorSettings] = React.useState(defaultCdnConnectorSettings());
   const [cdnConnectorMediaItems, setCdnConnectorMediaItems] = React.useState([]);
+  const [cdnConnectorAccesses, setCdnConnectorAccesses] = React.useState([]);
+  const [cdnConnectorUnusedAssets, setCdnConnectorUnusedAssets] = React.useState([]);
+  const [cdnConnectorGrantAccessAssetOptions, setCdnConnectorGrantAccessAssetOptions] = React.useState([]);
   const [cdnConnectorSyncJob, setCdnConnectorSyncJob] = React.useState(defaultCdnConnectorSyncJob());
   const [cdnConnectorSearch, setCdnConnectorSearch] = React.useState('');
+  const [cdnConnectorAccessesSearch, setCdnConnectorAccessesSearch] = React.useState('');
+  const [cdnConnectorUnusedAssetsSearch, setCdnConnectorUnusedAssetsSearch] = React.useState('');
+  const [cdnConnectorUnusedAssetsFilter, setCdnConnectorUnusedAssetsFilter] = React.useState('all');
+  const [isGrantAccessFormOpen, setIsGrantAccessFormOpen] = React.useState(false);
+  const [grantAccessEmail, setGrantAccessEmail] = React.useState('');
+  const [grantAccessAssets, setGrantAccessAssets] = React.useState([]);
+  const [grantAccessExpiresAt, setGrantAccessExpiresAt] = React.useState('');
+  const [cdnConnectorAccessesMessage, setCdnConnectorAccessesMessage] = React.useState('');
+  const [cdnConnectorUnusedAssetsMessage, setCdnConnectorUnusedAssetsMessage] = React.useState('');
+  const [cdnConnectorUnusedAssetsRetentionLabel, setCdnConnectorUnusedAssetsRetentionLabel] = React.useState('');
   const [expandedCdnConnectorItemIds, setExpandedCdnConnectorItemIds] = React.useState([]);
   const [syncedEndpointSearch, setSyncedEndpointSearch] = React.useState('');
   const [otherEndpointSearch, setOtherEndpointSearch] = React.useState('');
   const [syncedEndpointPage, setSyncedEndpointPage] = React.useState(1);
   const [otherEndpointPage, setOtherEndpointPage] = React.useState(1);
   const [cdnConnectorPage, setCdnConnectorPage] = React.useState(1);
+  const [cdnConnectorAccessesPage, setCdnConnectorAccessesPage] = React.useState(1);
+  const [cdnConnectorUnusedAssetsPage, setCdnConnectorUnusedAssetsPage] = React.useState(1);
   const [selectedSyncedRoutes, setSelectedSyncedRoutes] = React.useState([]);
   const [selectedOtherRoutes, setSelectedOtherRoutes] = React.useState([]);
   const [selectedCdnConnectorFileIds, setSelectedCdnConnectorFileIds] = React.useState([]);
@@ -1788,12 +2213,22 @@ export default function App() {
   const allSyncedEndpoints = buildEndpointDisplayRows(apiAcceleratorEndpoints, '', true);
   const allOtherEndpoints = buildEndpointDisplayRows(apiAcceleratorEndpoints, '', false);
   const allCdnConnectorItems = buildMediaDisplayRows(cdnConnectorMediaItems, '');
+  const allCdnConnectorAccesses = buildAccessDisplayRows(cdnConnectorAccesses, '');
+  const allCdnConnectorUnusedAssets = buildUnusedAssetDisplayRows(cdnConnectorUnusedAssets, '', 'all');
   const syncedEndpoints = buildEndpointDisplayRows(apiAcceleratorEndpoints, syncedEndpointSearch, true);
   const otherEndpoints = buildEndpointDisplayRows(apiAcceleratorEndpoints, otherEndpointSearch, false);
   const cdnConnectorItems = buildMediaDisplayRows(cdnConnectorMediaItems, cdnConnectorSearch);
+  const cdnConnectorAccessRows = buildAccessDisplayRows(cdnConnectorAccesses, cdnConnectorAccessesSearch);
+  const cdnConnectorUnusedAssetRows = buildUnusedAssetDisplayRows(
+    cdnConnectorUnusedAssets,
+    cdnConnectorUnusedAssetsSearch,
+    cdnConnectorUnusedAssetsFilter
+  );
   const syncedEndpointPageData = paginateRows(syncedEndpoints, syncedEndpointPage);
   const otherEndpointPageData = paginateRows(otherEndpoints, otherEndpointPage);
   const cdnConnectorPageData = paginateRows(cdnConnectorItems, cdnConnectorPage);
+  const cdnConnectorAccessesPageData = paginateRows(cdnConnectorAccessRows, cdnConnectorAccessesPage);
+  const cdnConnectorUnusedAssetsPageData = paginateRows(cdnConnectorUnusedAssetRows, cdnConnectorUnusedAssetsPage);
   const apiSyncProgress =
     apiAcceleratorSyncJob.totalRoutes > 0
       ? Math.round((apiAcceleratorSyncJob.processedRoutes / apiAcceleratorSyncJob.totalRoutes) * 100)
@@ -1822,6 +2257,18 @@ export default function App() {
     }
   }, [cdnConnectorPage, cdnConnectorPageData.currentPage]);
 
+  React.useEffect(() => {
+    if (cdnConnectorAccessesPage !== cdnConnectorAccessesPageData.currentPage) {
+      setCdnConnectorAccessesPage(cdnConnectorAccessesPageData.currentPage);
+    }
+  }, [cdnConnectorAccessesPage, cdnConnectorAccessesPageData.currentPage]);
+
+  React.useEffect(() => {
+    if (cdnConnectorUnusedAssetsPage !== cdnConnectorUnusedAssetsPageData.currentPage) {
+      setCdnConnectorUnusedAssetsPage(cdnConnectorUnusedAssetsPageData.currentPage);
+    }
+  }, [cdnConnectorUnusedAssetsPage, cdnConnectorUnusedAssetsPageData.currentPage]);
+
   const hydrate = React.useCallback((payload) => {
     const nextAccount = payload?.core?.account || defaultAccount();
     const moduleProjects =
@@ -1849,6 +2296,24 @@ export default function App() {
         ? payload.cdnConnector.mediaItems.map((item) => normalizeCdnConnectorMediaItem(item))
         : []
     );
+    setCdnConnectorAccesses(
+      Array.isArray(payload?.cdnConnector?.accesses)
+        ? payload.cdnConnector.accesses.map((item) => normalizeCdnConnectorAccess(item))
+        : []
+    );
+    setCdnConnectorUnusedAssets(
+      Array.isArray(payload?.cdnConnector?.unusedAssets)
+        ? payload.cdnConnector.unusedAssets.map((item) => normalizeCdnConnectorUnusedAsset(item))
+        : []
+    );
+    setCdnConnectorGrantAccessAssetOptions(
+      Array.isArray(payload?.cdnConnector?.grantAccessAssetOptions)
+        ? payload.cdnConnector.grantAccessAssetOptions.map((item) => normalizeGrantAccessAssetOption(item)).filter((item) => item.value)
+        : []
+    );
+    setCdnConnectorAccessesMessage(String(payload?.cdnConnector?.accessesMessage || '').trim());
+    setCdnConnectorUnusedAssetsMessage(String(payload?.cdnConnector?.unusedAssetsMessage || '').trim());
+    setCdnConnectorUnusedAssetsRetentionLabel(String(payload?.cdnConnector?.unusedAssetsRetentionLabel || '').trim());
     setCdnConnectorSyncJob(normalizeCdnConnectorSyncJob(payload?.cdnConnector?.syncJob || {}));
   }, []);
 
@@ -2848,6 +3313,63 @@ export default function App() {
     await setMediaProtection(fileId, false);
   }
 
+  async function revokeProjectAccess(accessId) {
+    const normalizedAccessId = String(accessId || '').trim();
+
+    if (!normalizedAccessId) {
+      return;
+    }
+
+    if (typeof window !== 'undefined') {
+      const confirmed = window.confirm('Are you sure you want to revoke this access?');
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    await runAction(
+      'Revoking project access',
+      async () => {
+        await client.post(`/${pluginId}/modules/cdn-connector/accesses/revoke`, {
+          accessId: normalizedAccessId,
+        });
+      },
+      'Project access revoked.'
+    );
+  }
+
+  function toggleGrantAccessForm() {
+    setIsGrantAccessFormOpen((current) => !current);
+  }
+
+  async function submitGrantAccess() {
+    const email = String(grantAccessEmail || '').trim();
+
+    if (!email) {
+      setMessage({
+        type: 'danger',
+        text: 'Enter a valid email address.',
+      });
+      return;
+    }
+
+    await runAction(
+      'Granting project access',
+      async () => {
+        await client.post(`/${pluginId}/modules/cdn-connector/accesses/grant`, {
+          email,
+          assets: grantAccessAssets,
+          expiresAt: String(grantAccessExpiresAt || '').trim(),
+        });
+        setGrantAccessEmail('');
+        setGrantAccessAssets([]);
+        setGrantAccessExpiresAt('');
+        setIsGrantAccessFormOpen(false);
+      },
+      'Access granted.'
+    );
+  }
+
   async function discoverEndpoints() {
     await runAction(
       'Scanning endpoints',
@@ -3750,39 +4272,91 @@ export default function App() {
         </SectionCard>
 
         {isEnabled ? (
-          <MediaTableCard
-            title="Media items"
-            subtitle="Media items available in the Strapi upload library, with direct sync controls and Smooth CDN links."
-            totalCount={allCdnConnectorItems.length}
-            filteredCount={cdnConnectorItems.length}
-            items={cdnConnectorPageData.rows}
-            searchValue={cdnConnectorSearch}
-            onSearchChange={(value) => {
-              setCdnConnectorSearch(value);
-              setCdnConnectorPage(1);
-            }}
-            currentPage={cdnConnectorPageData.currentPage}
-            totalPages={cdnConnectorPageData.totalPages}
-            startIndex={cdnConnectorPageData.startIndex}
-            endIndex={cdnConnectorPageData.endIndex}
-            onPageChange={setCdnConnectorPage}
-            selectedFileIds={selectedCdnConnectorFileIds}
-            onToggleFile={toggleSelectedMediaFiles}
-            onToggleAllFiles={toggleAllSelectedMediaFiles}
-            onBulkSyncAll={syncAllMediaItems}
-            onBulkSyncSelected={syncSelectedMediaItems}
-            onBulkUnsync={unsyncSelectedMediaItems}
-            onSyncOne={syncSingleMediaItem}
-            onUnsyncOne={unsyncSingleMediaItem}
-            onProtectOne={protectSingleMediaItem}
-            onUnprotectOne={unprotectSingleMediaItem}
-            onCopyUrl={copyVariantUrl}
-            copiedKey={copiedKey}
-            expandedItemIds={expandedCdnConnectorItemIds}
-            onToggleExpanded={toggleExpandedCdnConnectorItem}
-            isOffloadEnabled={Boolean(cdnConnectorSettings.offloadLocalFiles)}
-            isBusy={isCdnConnectorBusy}
-          />
+          <Flex direction="column" gap={6} alignItems="stretch">
+            <MediaTableCard
+              title="Media items"
+              subtitle="Media items available in the Strapi upload library, with direct sync controls and Smooth CDN links."
+              totalCount={allCdnConnectorItems.length}
+              filteredCount={cdnConnectorItems.length}
+              items={cdnConnectorPageData.rows}
+              searchValue={cdnConnectorSearch}
+              onSearchChange={(value) => {
+                setCdnConnectorSearch(value);
+                setCdnConnectorPage(1);
+              }}
+              currentPage={cdnConnectorPageData.currentPage}
+              totalPages={cdnConnectorPageData.totalPages}
+              startIndex={cdnConnectorPageData.startIndex}
+              endIndex={cdnConnectorPageData.endIndex}
+              onPageChange={setCdnConnectorPage}
+              selectedFileIds={selectedCdnConnectorFileIds}
+              onToggleFile={toggleSelectedMediaFiles}
+              onToggleAllFiles={toggleAllSelectedMediaFiles}
+              onBulkSyncAll={syncAllMediaItems}
+              onBulkSyncSelected={syncSelectedMediaItems}
+              onBulkUnsync={unsyncSelectedMediaItems}
+              onSyncOne={syncSingleMediaItem}
+              onUnsyncOne={unsyncSingleMediaItem}
+              onProtectOne={protectSingleMediaItem}
+              onUnprotectOne={unprotectSingleMediaItem}
+              onCopyUrl={copyVariantUrl}
+              copiedKey={copiedKey}
+              expandedItemIds={expandedCdnConnectorItemIds}
+              onToggleExpanded={toggleExpandedCdnConnectorItem}
+              isOffloadEnabled={Boolean(cdnConnectorSettings.offloadLocalFiles)}
+              isBusy={isCdnConnectorBusy}
+            />
+            <AccessesTableCard
+              totalCount={allCdnConnectorAccesses.length}
+              filteredCount={cdnConnectorAccessRows.length}
+              items={cdnConnectorAccessesPageData.rows}
+              searchValue={cdnConnectorAccessesSearch}
+              onSearchChange={(value) => {
+                setCdnConnectorAccessesSearch(value);
+                setCdnConnectorAccessesPage(1);
+              }}
+              currentPage={cdnConnectorAccessesPageData.currentPage}
+              totalPages={cdnConnectorAccessesPageData.totalPages}
+              startIndex={cdnConnectorAccessesPageData.startIndex}
+              endIndex={cdnConnectorAccessesPageData.endIndex}
+              onPageChange={setCdnConnectorAccessesPage}
+              onGrantToggle={toggleGrantAccessForm}
+              isGrantFormOpen={isGrantAccessFormOpen}
+              grantEmail={grantAccessEmail}
+              onGrantEmailChange={setGrantAccessEmail}
+              grantAssets={grantAccessAssets}
+              onGrantAssetsChange={setGrantAccessAssets}
+              grantExpiresAt={grantAccessExpiresAt}
+              onGrantExpiresAtChange={setGrantAccessExpiresAt}
+              grantAssetOptions={cdnConnectorGrantAccessAssetOptions}
+              onGrantSubmit={submitGrantAccess}
+              onRevokeOne={revokeProjectAccess}
+              isBusy={isInteractionBusy}
+              message={cdnConnectorAccessesMessage}
+            />
+            <UnusedAssetsTableCard
+              totalCount={allCdnConnectorUnusedAssets.length}
+              filteredCount={cdnConnectorUnusedAssetRows.length}
+              items={cdnConnectorUnusedAssetsPageData.rows}
+              searchValue={cdnConnectorUnusedAssetsSearch}
+              onSearchChange={(value) => {
+                setCdnConnectorUnusedAssetsSearch(value);
+                setCdnConnectorUnusedAssetsPage(1);
+              }}
+              filterValue={cdnConnectorUnusedAssetsFilter}
+              onFilterChange={(value) => {
+                setCdnConnectorUnusedAssetsFilter(value);
+                setCdnConnectorUnusedAssetsPage(1);
+              }}
+              currentPage={cdnConnectorUnusedAssetsPageData.currentPage}
+              totalPages={cdnConnectorUnusedAssetsPageData.totalPages}
+              startIndex={cdnConnectorUnusedAssetsPageData.startIndex}
+              endIndex={cdnConnectorUnusedAssetsPageData.endIndex}
+              onPageChange={setCdnConnectorUnusedAssetsPage}
+              retentionLabel={cdnConnectorUnusedAssetsRetentionLabel}
+              message={cdnConnectorUnusedAssetsMessage}
+            />
+          </Flex>
         ) : null}
       </>
     );

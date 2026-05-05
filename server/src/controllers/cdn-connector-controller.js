@@ -6,6 +6,41 @@ function plugin(strapi) {
   return strapi.plugin(pluginId);
 }
 
+function buildGrantAccessAssetPath(path = '', filename = '') {
+  const normalizedFilename = String(filename || '').trim().replace(/^\/+/, '');
+
+  if (!normalizedFilename) {
+    return '';
+  }
+
+  const normalizedPath = String(path || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+
+  return normalizedPath ? `/${normalizedPath}/${normalizedFilename}` : `/${normalizedFilename}`;
+}
+
+function buildGrantAccessAssetOptions(mediaItems = []) {
+  const options = new Set();
+
+  for (const item of Array.isArray(mediaItems) ? mediaItems : []) {
+    if (!item?.protected) {
+      continue;
+    }
+
+    for (const entry of Array.isArray(item?.syncedEntries) ? item.syncedEntries : []) {
+      const value = buildGrantAccessAssetPath(entry?.path, entry?.filename);
+
+      if (value) {
+        options.add(value);
+      }
+    }
+  }
+
+  return Array.from(options.values()).sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+}
+
 async function ensureEnabled(strapi, ctx) {
   const enabled = await plugin(strapi).service('module-registry').isEnabled('cdn-connector');
 
@@ -158,6 +193,105 @@ module.exports = ({ strapi }) => ({
       },
     };
     ctx.status = result.success ? 202 : result.busy ? 409 : 400;
+  },
+
+  async revokeAccess(ctx) {
+    if (!(await ensureEnabled(strapi, ctx))) {
+      return;
+    }
+
+    const accessId = String(ctx.request.body?.accessId || '').trim();
+    const result = await plugin(strapi).service('smooth-client').revokeProjectAccess(accessId, 'cdn-connector');
+
+    if (!result.success) {
+      ctx.status = 400;
+      ctx.body = {
+        error: {
+          message: result.message || 'Could not revoke project access.',
+        },
+      };
+      return;
+    }
+
+    ctx.body = {
+      data: {
+        result,
+      },
+    };
+  },
+
+  async grantAccess(ctx) {
+    if (!(await ensureEnabled(strapi, ctx))) {
+      return;
+    }
+
+    const email = String(ctx.request.body?.email || '').trim();
+    const expiresAt = String(ctx.request.body?.expiresAt || '').trim();
+    const assets = Array.isArray(ctx.request.body?.assets) ? ctx.request.body.assets : [];
+    const normalizedAssets = Array.from(new Set(assets.map((entry) => String(entry || '').trim()).filter(Boolean)));
+    const mediaItems = await plugin(strapi).service('cdn-connector-sync').listMediaItems();
+    const assetOptions = buildGrantAccessAssetOptions(mediaItems);
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      ctx.status = 400;
+      ctx.body = {
+        error: {
+          message: 'Enter a valid email address.',
+        },
+      };
+      return;
+    }
+
+    if (assetOptions.length === 0) {
+      ctx.status = 400;
+      ctx.body = {
+        error: {
+          message: 'You have no protected assets in this project to assign access to',
+        },
+      };
+      return;
+    }
+
+    let normalizedExpiresAt = null;
+
+    if (expiresAt) {
+      const localDate = new Date(expiresAt);
+
+      if (!Number.isFinite(localDate.getTime())) {
+        ctx.status = 400;
+        ctx.body = {
+          error: {
+            message: 'Enter a valid expiration date and time.',
+          },
+        };
+        return;
+      }
+
+      normalizedExpiresAt = localDate.toISOString();
+    }
+
+    const allowedAssets = new Set(assetOptions);
+    const selectedAssets = normalizedAssets.filter((entry) => allowedAssets.has(entry));
+    const assetsPayload = selectedAssets.length === 0 ? true : selectedAssets;
+    const result = await plugin(strapi)
+      .service('smooth-client')
+      .grantProjectAccess(email, assetsPayload, normalizedExpiresAt, 'cdn-connector');
+
+    if (!result.success) {
+      ctx.status = 400;
+      ctx.body = {
+        error: {
+          message: result.message || 'Could not grant access.',
+        },
+      };
+      return;
+    }
+
+    ctx.body = {
+      data: {
+        result,
+      },
+    };
   },
 
   async syncStatus(ctx) {

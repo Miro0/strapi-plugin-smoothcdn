@@ -334,6 +334,26 @@ function extractUploadedAssetEntries(payload = {}) {
   return entries;
 }
 
+function extractCollectionRows(payload = {}) {
+  const buckets = [
+    payload,
+    payload?.data,
+    payload?.rows,
+    payload?.accesses,
+    payload?.assets,
+    payload?.usage,
+    payload?.results,
+  ];
+
+  for (const bucket of buckets) {
+    if (Array.isArray(bucket)) {
+      return bucket.filter((entry) => entry && typeof entry === 'object');
+    }
+  }
+
+  return [];
+}
+
 function normalizeUploadFocusPoint(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -1081,6 +1101,211 @@ module.exports = ({ strapi }) => ({
       success: true,
       settings: nextSettings,
       customSubdomain: extractCustomSubdomain(projectData) || normalizedCustomSubdomain,
+    };
+  },
+
+  async getProjectAccesses(moduleId = 'cdn-connector') {
+    const settingsService = strapi.plugin('smoothcdn').service('core-settings');
+    const settings = await settingsService.get();
+    const project = await settingsService.getProject(moduleId);
+
+    if (!settings.connected || !settings.accessToken) {
+      return {
+        success: false,
+        message: 'Connect to Smooth CDN first.',
+        data: [],
+      };
+    }
+
+    if (!project.projectId) {
+      return {
+        success: false,
+        message: 'Create the module project first.',
+        data: [],
+      };
+    }
+
+    const response = await this.requestJson('GET', `/projects/${encodeURIComponent(project.projectId)}/accesses`, {
+      headers: {
+        Authorization: `Bearer ${settings.accessToken}`,
+      },
+    });
+
+    if (!response.success) {
+      return {
+        success: false,
+        message: response.message || 'Could not fetch project accesses from Smooth CDN.',
+        data: extractCollectionRows(response.data),
+      };
+    }
+
+    return {
+      success: true,
+      data: extractCollectionRows(response.data),
+    };
+  },
+
+  async grantProjectAccess(email, assets = true, expiresAt = null, moduleId = 'cdn-connector') {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const normalizedExpiresAt = String(expiresAt || '').trim();
+    const settingsService = strapi.plugin('smoothcdn').service('core-settings');
+    const settings = await settingsService.get();
+    const project = await settingsService.getProject(moduleId);
+
+    if (!normalizedEmail) {
+      return {
+        success: false,
+        message: 'Email is required.',
+      };
+    }
+
+    if (!settings.connected || !settings.accessToken) {
+      return {
+        success: false,
+        message: 'Connect to Smooth CDN first.',
+      };
+    }
+
+    if (!project.projectId) {
+      return {
+        success: false,
+        message: 'Create the module project first.',
+      };
+    }
+
+    const normalizedAssets =
+      assets === true
+        ? true
+        : Array.from(
+            new Set(
+              (Array.isArray(assets) ? assets : [assets])
+                .map((entry) => String(entry || '').trim())
+                .filter(Boolean)
+            )
+          );
+
+    const payload = {
+      email: normalizedEmail,
+      assets: normalizedAssets === true ? true : normalizedAssets,
+      expiresAt: normalizedExpiresAt || null,
+    };
+
+    const response = await this.requestJson(
+      'POST',
+      `/projects/${encodeURIComponent(project.projectId)}/accesses/grant`,
+      {
+        headers: {
+          Authorization: `Bearer ${settings.accessToken}`,
+        },
+        payload,
+      }
+    );
+
+    if (!response.success) {
+      return {
+        success: false,
+        message: response.message || 'Could not grant project access.',
+      };
+    }
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  },
+
+  async revokeProjectAccess(accessId, moduleId = 'cdn-connector') {
+    const normalizedAccessId = String(accessId || '').trim();
+
+    if (!normalizedAccessId) {
+      return {
+        success: false,
+        message: 'Access ID is missing.',
+      };
+    }
+
+    const settingsService = strapi.plugin('smoothcdn').service('core-settings');
+    const settings = await settingsService.get();
+    const project = await settingsService.getProject(moduleId);
+
+    if (!settings.connected || !settings.accessToken) {
+      return {
+        success: false,
+        message: 'Connect to Smooth CDN first.',
+      };
+    }
+
+    if (!project.projectId) {
+      return {
+        success: false,
+        message: 'Create the module project first.',
+      };
+    }
+
+    const response = await this.requestJson(
+      'POST',
+      `/projects/${encodeURIComponent(project.projectId)}/accesses/${encodeURIComponent(normalizedAccessId)}/revoke`,
+      {
+        headers: {
+          Authorization: `Bearer ${settings.accessToken}`,
+        },
+      }
+    );
+
+    if (!response.success) {
+      return {
+        success: false,
+        message: response.message || 'Could not revoke project access.',
+      };
+    }
+
+    return {
+      success: true,
+      data: response.data,
+    };
+  },
+
+  async getDailyAssetUsage(moduleId = 'cdn-connector') {
+    const settingsService = strapi.plugin('smoothcdn').service('core-settings');
+    const settings = await settingsService.get();
+    const project = await settingsService.getProject(moduleId);
+
+    if (!settings.connected || !settings.accessToken) {
+      return {
+        success: false,
+        message: 'Connect to Smooth CDN first.',
+        data: [],
+      };
+    }
+
+    if (!project.projectId) {
+      return {
+        success: false,
+        message: 'Create the module project first.',
+        data: [],
+      };
+    }
+
+    const query = new URLSearchParams({
+      project_id: project.projectId,
+    });
+    const response = await this.requestJson('GET', `/usage/assets/daily?${query.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${settings.accessToken}`,
+      },
+    });
+
+    if (!response.success) {
+      return {
+        success: false,
+        message: response.message || 'Could not fetch daily asset usage from Smooth CDN.',
+        data: extractCollectionRows(response.data),
+      };
+    }
+
+    return {
+      success: true,
+      data: extractCollectionRows(response.data),
     };
   },
 

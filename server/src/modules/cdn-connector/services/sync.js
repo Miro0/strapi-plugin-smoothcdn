@@ -797,9 +797,16 @@ module.exports = ({ strapi }) => {
     const markUploadedItem = async (batchEntry, upload) => {
       const uploadResults = upload && typeof upload.results === 'object' ? upload.results : {};
       const nextSyncedEntries = batchEntry.syncPlan.map((entry) => {
+        const uploadResult = uploadResults[entry.route] && typeof uploadResults[entry.route] === 'object'
+          ? uploadResults[entry.route]
+          : {};
+
         return {
           key: entry.key,
           label: entry.label,
+          projectAssetId: String(
+            uploadResult.projectAssetId || uploadResult.assetId || uploadResult.asset_id || ''
+          ).trim(),
           path: entry.path,
           filename: entry.filename,
           mime: entry.mime,

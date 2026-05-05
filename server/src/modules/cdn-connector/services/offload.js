@@ -226,6 +226,85 @@ function stripUpdatedAtParamFromSignedPayload(payload) {
   return stripUpdatedAtParamFromFilePayload(payload);
 }
 
+function addNoUsageLogsParamToUrl(urlValue) {
+  const normalized = String(urlValue || '').trim();
+
+  if (!normalized) {
+    return normalized;
+  }
+
+  try {
+    const resolved = /^https?:\/\//i.test(normalized)
+      ? new URL(normalized)
+      : new URL(normalized, 'http://smoothcdn-local');
+
+    resolved.searchParams.set('no-usage-logs', '1');
+    const next = resolved.toString();
+
+    if (/^https?:\/\//i.test(normalized)) {
+      return next;
+    }
+
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  } catch (error) {
+    const separator = normalized.includes('?') ? '&' : '?';
+    return `${normalized}${separator}no-usage-logs=1`;
+  }
+}
+
+function addNoUsageLogsParamToFilePayload(file = {}) {
+  if (!isUploadFilePayload(file) || !isImageLikeFilePayload(file)) {
+    return file;
+  }
+
+  let changed = false;
+  const nextFile = {
+    ...file,
+  };
+
+  if (typeof file.url === 'string') {
+    const nextUrl = addNoUsageLogsParamToUrl(file.url);
+    if (nextUrl !== file.url) {
+      changed = true;
+      nextFile.url = nextUrl;
+    }
+  }
+
+  if (file.formats && typeof file.formats === 'object') {
+    let formatChanged = false;
+    const nextFormats = { ...file.formats };
+
+    for (const [variantKey, variantValue] of Object.entries(file.formats)) {
+      if (!variantValue || typeof variantValue !== 'object' || typeof variantValue.url !== 'string') {
+        continue;
+      }
+
+      const nextVariantUrl = addNoUsageLogsParamToUrl(variantValue.url);
+      if (nextVariantUrl === variantValue.url) {
+        continue;
+      }
+
+      formatChanged = true;
+      nextFormats[variantKey] = {
+        ...variantValue,
+        url: nextVariantUrl,
+      };
+    }
+
+    if (formatChanged) {
+      changed = true;
+      nextFile.formats = nextFormats;
+    }
+  }
+
+  return changed ? nextFile : file;
+}
+
+function isAdminRequestContext(strapi) {
+  const ctx = strapi?.requestContext?.get?.();
+  return ctx?.state?.route?.info?.type === 'admin';
+}
+
 module.exports = ({ strapi }) => {
   let rewriteCache = {
     refreshedAt: 0,
@@ -386,7 +465,11 @@ module.exports = ({ strapi }) => {
       nextFile.formats = nextFormats;
     }
 
-    return nextFile;
+    if (!isAdminRequestContext(strapi)) {
+      return nextFile;
+    }
+
+    return addNoUsageLogsParamToFilePayload(nextFile);
   }
 
   function rewriteSignedFileUrlsPayload(payload, state) {

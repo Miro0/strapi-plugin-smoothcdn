@@ -1,6 +1,6 @@
 'use strict';
 
-const { buildProjectDashboardUrl, escapeHtml } = require('../utils/helpers');
+const { buildProjectDashboardUrl, buildProjectPanelPath, escapeHtml } = require('../utils/helpers');
 const pluginId = require('../plugin-id');
 
 function plugin(strapi) {
@@ -72,6 +72,229 @@ function buildAccountResponse(strapi, settings) {
   }
 
   return account;
+}
+
+function extractListRows(payload) {
+  if (Array.isArray(payload)) {
+    return payload.filter((entry) => entry && typeof entry === 'object');
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+
+  const buckets = [payload.data, payload.rows, payload.accesses, payload.assets, payload.usage, payload.results];
+
+  for (const bucket of buckets) {
+    if (Array.isArray(bucket)) {
+      return bucket.filter((entry) => entry && typeof entry === 'object');
+    }
+  }
+
+  return [];
+}
+
+function parseDateValue(value) {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function summarizeAccessAssets(assets = []) {
+  const normalizedAssets = (Array.isArray(assets) ? assets : [])
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+
+  if (normalizedAssets.length === 0) {
+    return 'All protected assets';
+  }
+
+  if (normalizedAssets.length === 1) {
+    return normalizedAssets[0];
+  }
+
+  return `${normalizedAssets[0]} +${normalizedAssets.length - 1} more`;
+}
+
+function extractAccessAssets(item = {}) {
+  if (Array.isArray(item.assets)) {
+    return item.assets
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry;
+        }
+
+        if (entry && typeof entry === 'object') {
+          return String(
+            entry.label || entry.name || entry.fileName || entry.file_name || entry.assetName || entry.asset_name || entry.id || ''
+          ).trim();
+        }
+
+        return '';
+      })
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function normalizeAccessRow(item = {}) {
+  const assets = extractAccessAssets(item);
+
+  return {
+    id: String(item.id || item.accessId || item.access_id || item.uuid || '').trim(),
+    email: String(item.email || item.userEmail || item.user_email || item?.user?.email || '').trim() || 'Unknown email',
+    assets,
+    assetsLabel: summarizeAccessAssets(assets),
+    expiresAt: String(item.expiresAt || item.expires_at || item.expiration || item.expireAt || item.expire_at || '').trim(),
+    updatedAt: String(item.updatedAt || item.updated_at || '').trim(),
+    createdAt: String(item.createdAt || item.created_at || '').trim(),
+  };
+}
+
+function buildAccessRows(response = {}) {
+  return extractListRows(response.data).map((item) => normalizeAccessRow(item));
+}
+
+function buildUsageByAssetMap(response = {}) {
+  const usageByAsset = new Map();
+
+  for (const row of extractListRows(response.data)) {
+    const assetId = String(row.assetId || row.asset_id || '').trim();
+
+    if (!assetId) {
+      continue;
+    }
+
+    const previous = usageByAsset.get(assetId);
+    const previousTimestamp = parseDateValue(previous?.updatedAt || previous?.updated_at || previous?.date || '');
+    const nextTimestamp = parseDateValue(row.updatedAt || row.updated_at || row.date || '');
+
+    if (!previous || nextTimestamp >= previousTimestamp) {
+      usageByAsset.set(assetId, row);
+    }
+  }
+
+  return usageByAsset;
+}
+
+function isUnusedAssetEntrySynced(entry = {}) {
+  const syncedEntries = Array.isArray(entry?.syncedEntries) ? entry.syncedEntries : [];
+  const syncStatus = String(entry?.syncStatus || '').trim();
+
+  return syncStatus === 'uploaded' || syncedEntries.length > 0;
+}
+
+function resolveUnusedAssetLabel(entry = {}, mediaByFileId = new Map()) {
+  const fileId = String(entry?.fileId || '').trim();
+  const matchedMediaItem = fileId ? mediaByFileId.get(fileId) : null;
+
+  if (matchedMediaItem?.name) {
+    return String(matchedMediaItem.name).trim();
+  }
+
+  const firstSyncedEntry = Array.isArray(entry?.syncedEntries) ? entry.syncedEntries[0] : null;
+  const fallbackPath = buildGrantAccessAssetPath(firstSyncedEntry?.path, firstSyncedEntry?.filename);
+
+  return fallbackPath || `Asset ${fileId || 'unknown'}`;
+}
+
+function buildUnusedAssetRows(repositoryEntries = [], mediaItems = [], usageResponse = {}) {
+  const usageByAsset = buildUsageByAssetMap(usageResponse);
+  const mediaByFileId = new Map(
+    (Array.isArray(mediaItems) ? mediaItems : [])
+      .map((item) => [String(item?.fileId || '').trim(), item])
+      .filter(([fileId]) => fileId)
+  );
+
+  return (Array.isArray(repositoryEntries) ? repositoryEntries : []).flatMap((entry) => {
+    if (!isUnusedAssetEntrySynced(entry)) {
+      return [];
+    }
+
+    const syncedEntries = Array.isArray(entry?.syncedEntries) ? entry.syncedEntries : [];
+    const assetIds = Array.from(
+      new Set(
+        syncedEntries
+          .map((entry) => String(entry?.projectAssetId || entry?.assetId || entry?.asset_id || '').trim())
+          .filter(Boolean)
+      )
+    );
+    const matchedUsageRows = assetIds
+      .map((assetId) => usageByAsset.get(assetId))
+      .filter(Boolean)
+      .sort((left, right) => {
+        const rightTimestamp = parseDateValue(right?.updatedAt || right?.updated_at || right?.date || '');
+        const leftTimestamp = parseDateValue(left?.updatedAt || left?.updated_at || left?.date || '');
+        return rightTimestamp - leftTimestamp;
+      });
+    const usageRow = matchedUsageRows[0] || null;
+    const fallbackAssetId = assetIds[0] || buildGrantAccessAssetPath(syncedEntries[0]?.path, syncedEntries[0]?.filename);
+
+    return [
+      {
+        id: String(entry.fileId || fallbackAssetId).trim(),
+        assetId: fallbackAssetId,
+        asset: resolveUnusedAssetLabel(entry, mediaByFileId),
+        updatedAt: String(usageRow?.updatedAt || usageRow?.updated_at || usageRow?.date || '').trim(),
+        hasUsageRecord: Boolean(usageRow),
+      },
+    ];
+  });
+}
+
+function buildGrantAccessAssetPath(path = '', filename = '') {
+  const normalizedFilename = String(filename || '').trim().replace(/^\/+/, '');
+
+  if (!normalizedFilename) {
+    return '';
+  }
+
+  const normalizedPath = String(path || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+
+  return normalizedPath ? `/${normalizedPath}/${normalizedFilename}` : `/${normalizedFilename}`;
+}
+
+function buildGrantAccessAssetOptions(mediaItems = []) {
+  const options = new Map();
+
+  for (const item of Array.isArray(mediaItems) ? mediaItems : []) {
+    if (!item?.protected) {
+      continue;
+    }
+
+    for (const entry of Array.isArray(item?.syncedEntries) ? item.syncedEntries : []) {
+      const value = buildGrantAccessAssetPath(entry?.path, entry?.filename);
+
+      if (!value) {
+        continue;
+      }
+
+      options.set(value, {
+        value,
+        label: value,
+      });
+    }
+  }
+
+  return Array.from(options.values()).sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true }));
+}
+
+function getUnusedAssetsRetentionLabel(plan) {
+  switch (Number(plan)) {
+    case -1:
+      return '1 day';
+    case 1:
+      return '90 days';
+    case 2:
+    case 3:
+      return '365 days';
+    case 0:
+    default:
+      return '30 days';
+  }
 }
 
 function renderAutoSubmitPage({ actionUrl, fields, title }) {
@@ -191,6 +414,11 @@ module.exports = ({ strapi }) => ({
     const repository = plugin(strapi).service('api-accelerator-repository');
     const runtimeState = await plugin(strapi).service('api-accelerator-runtime-state').get();
     const cdnConnectorRuntimeState = await plugin(strapi).service('cdn-connector-runtime-state').get();
+    const cdnConnectorMediaItems = await plugin(strapi).service('cdn-connector-sync').listMediaItems();
+    const cdnConnectorRepositoryEntries = await plugin(strapi).service('cdn-connector-repository').all();
+    const accessesResponse = await plugin(strapi).service('smooth-client').getProjectAccesses('cdn-connector');
+    const dailyAssetUsageResponse = await plugin(strapi).service('smooth-client').getDailyAssetUsage('cdn-connector');
+    const cdnProject = buildModuleProject(coreSettings, 'cdn-connector');
 
     ctx.body = {
       data: {
@@ -207,7 +435,19 @@ module.exports = ({ strapi }) => ({
         },
         cdnConnector: {
           settings: cdnConnectorSettings,
-          mediaItems: await plugin(strapi).service('cdn-connector-sync').listMediaItems(),
+          mediaItems: cdnConnectorMediaItems,
+          accesses: buildAccessRows(accessesResponse),
+          accessesMessage: accessesResponse.success ? '' : String(accessesResponse.message || '').trim(),
+          unusedAssets: buildUnusedAssetRows(
+            cdnConnectorRepositoryEntries,
+            cdnConnectorMediaItems,
+            dailyAssetUsageResponse
+          ),
+          unusedAssetsMessage: dailyAssetUsageResponse.success ? '' : String(dailyAssetUsageResponse.message || '').trim(),
+          unusedAssetsRetentionLabel: getUnusedAssetsRetentionLabel(coreSettings.userPlan),
+          grantAccessAssetOptions: buildGrantAccessAssetOptions(cdnConnectorMediaItems),
+          dashboardAccessesUrl:
+            cdnProject?.projectId ? `${buildProjectPanelPath(cdnProject.projectId)}/accesses` : '',
           syncJob: cdnConnectorRuntimeState.syncJob || null,
         },
       },
